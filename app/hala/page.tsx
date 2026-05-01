@@ -140,6 +140,43 @@ export default function HalaPage() {
     Try Free Tax Calculator
   </a>
 </section>
+      {/* ENQUIRY FORM */}
+<section style={{ padding: "60px 20px", background: "#111", color: "white", textAlign: "center" }}>
+  <h2>Want a website or digital tool for your business?</h2>
+
+  <p style={{ marginTop: "10px" }}>
+    Tell us what you need and we’ll get back to you.
+  </p>
+
+  <form
+    action="https://formspree.io/f/xbdwlgdv"
+    method="POST"
+    style={{ maxWidth: "600px", margin: "30px auto", display: "grid", gap: "12px" }}
+  >
+    <input type="hidden" name="_subject" value="New Hala Digital Enquiry" />
+
+    <input name="name" placeholder="Your name" required style={{ padding: "12px", borderRadius: "8px" }} />
+
+    <input name="email" type="email" placeholder="Email address" required style={{ padding: "12px", borderRadius: "8px" }} />
+
+    <input name="phone" placeholder="Phone / WhatsApp" required style={{ padding: "12px", borderRadius: "8px" }} />
+
+    <select name="service" required style={{ padding: "12px", borderRadius: "8px" }}>
+      <option value="">What do you need?</option>
+      <option>Website</option>
+      <option>SEO</option>
+      <option>Tax / VAT Tool</option>
+      <option>Automation</option>
+      <option>Not sure yet</option>
+    </select>
+
+    <textarea name="message" placeholder="Tell us briefly what you need" rows={4} required style={{ padding: "12px", borderRadius: "8px" }} />
+
+    <button type="submit" style={{ padding: "14px", borderRadius: "8px", background: "#25D366", color: "white", border: "none", fontWeight: "bold" }}>
+      Send enquiry
+    </button>
+  </form>
+</section>
 
       {/* CTA */}
       <section style={{ padding: "60px 20px", textAlign: "center" }}>
