@@ -23,6 +23,20 @@ export default function HalaPage() {
               textDecoration: "none",
               marginRight: "10px"
             }}
+             >
+    Get Instant Website Quote
+  </a>
+
+  <a
+    href="https://wa.me/447884063169"
+    style={{
+      padding: "14px 24px",
+      background: "#25D366",
+      color: "white",
+      borderRadius: "8px",
+      textDecoration: "none",
+      marginRight: "10px"
+    }}
           >
             Start a Project
           </a>
