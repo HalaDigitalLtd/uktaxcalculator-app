@@ -477,9 +477,9 @@ function SummaryBox({
 
 function LeadCaptureForm() {
   return (
-    <form
-      className="leadForm"
-      onSubmit={async (e) => {
+   <form
+  className="leadForm"
+  onSubmit={async (e) => {
     e.preventDefault();
 
     const formData = new FormData(e.currentTarget);
@@ -494,8 +494,7 @@ function LeadCaptureForm() {
 
     window.location.href = "/thank-you";
   }}
->
-    >
+>    
       <div className="field">
         <label>Name</label>
         <input name="name" placeholder="Your name" required />
