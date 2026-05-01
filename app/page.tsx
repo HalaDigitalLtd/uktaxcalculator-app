@@ -623,8 +623,15 @@ function CalculatorSection() {
             </div>
 
             <div className="ctaPanel">
-              <h3>Want this checked before filing?</h3>
-              <p>Submit your details and an accountant can review the figures before anything is filed with HMRC.</p>
+              <h3>Not sure if this is accurate?</h3>
+
+<p>
+You could be overpaying tax without realising it.
+Submit your details and a UK accountant will review your figures before anything is filed with HMRC.
+</p>
+              <p style={{ marginTop: "10px", fontWeight: "bold" }}>
+⚡ Most reviews identify savings or corrections.
+</p>
               <LeadCaptureForm />
             </div>
           </div>
