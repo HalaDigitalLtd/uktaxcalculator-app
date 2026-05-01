@@ -542,8 +542,15 @@ function LeadCaptureForm() {
         <textarea name="message" rows={3} placeholder="Self Assessment, sole trader, dividends, rental income..." required />
       </div>
       <button className="btn btnPrimary full" type="submit">
-        Request accountant review
+        Get my tax reviewed by an expert
       </button>
+    <p style={{ fontSize: "14px", marginTop: "10px", opacity: 0.8 }}>
+  Usually reviewed within 24 hours. No obligation.
+</p>
+
+<p style={{ fontSize: "13px", marginTop: "10px", opacity: 0.7 }}>
+  By submitting, you agree to be contacted regarding your enquiry.
+</p>
     </form>
   );
 }
@@ -659,8 +666,8 @@ function CalculatorSection() {
               <h3>Not sure if this is accurate?</h3>
 
 <p>
-You could be overpaying tax without realising it.
-Submit your details and a UK accountant will review your figures before anything is filed with HMRC.
+Avoid overpaying tax or making costly mistakes.  
+Get your figures checked by a UK accountant before submitting to HMRC.
 </p>
               <p style={{ marginTop: "10px", fontWeight: "bold" }}>
 ⚡ Most reviews identify savings or corrections.
