@@ -705,14 +705,13 @@ export default function Home() {
           <div className="container heroGrid">
             <div>
               <span className="badge">Tax Year {TAX_YEAR} • Testing prototype</span>
-              <h1>Smart UK tax tools for individuals, businesses and accountants.</h1>
+              <h1>Estimate your UK tax in 30 seconds.</h1>
               <p>
-                UK Tax Calculator is a Hala Digital product designed to help users estimate Self Assessment tax,
-                understand key risk areas, and connect with accountants for final review.
+                Instant HMRC-aligned tax estimates for employees, landlords and company directors. No signup required.
               </p>
               <div className="heroActions">
-                <a className="btn btnPrimary" href="#calculator">Start calculator</a>
-                <a className="btn btnLight" href="#pricing">For accountancy practices</a>
+                <a className="btn btnPrimary" href="#calculator">Calculate My Tax Now</a>
+                <a className="btn btnLight" href="#pricing">Get Accountant Review</a>
               </div>
             </div>
             <div className="heroCard">
