@@ -117,6 +117,29 @@ export default function HalaPage() {
     </div>
   </div>
 </section>
+      {/* FREE VALUE */}
+<section style={{ padding: "60px 20px", textAlign: "center" }}>
+  <h2>Try Our Free Tools</h2>
+
+  <p style={{ marginTop: "10px" }}>
+    Not ready to buy? Start with our free tax calculator and see how we build high-converting tools.
+  </p>
+
+  <a
+    href="https://www.uktaxcalculator.co.uk"
+    style={{
+      display: "inline-block",
+      marginTop: "20px",
+      padding: "14px 24px",
+      background: "#0070f3",
+      color: "white",
+      borderRadius: "8px",
+      textDecoration: "none"
+    }}
+  >
+    Try Free Tax Calculator
+  </a>
+</section>
 
       {/* CTA */}
       <section style={{ padding: "60px 20px", textAlign: "center" }}>
