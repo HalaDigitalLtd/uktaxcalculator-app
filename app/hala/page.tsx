@@ -93,6 +93,30 @@ export default function HalaPage() {
     <p>✅ Simple monthly support available after launch</p>
   </div>
 </section>
+      {/* PACKAGES */}
+<section style={{ padding: "60px 20px", background: "#f9f9f9", textAlign: "center" }}>
+  <h2>Simple Packages</h2>
+
+  <div style={{ maxWidth: "900px", margin: "30px auto", display: "grid", gap: "20px" }}>
+    <div>
+      <h3>Starter Website</h3>
+      <p>From £299 setup</p>
+      <p>One-page website, WhatsApp CTA and contact form.</p>
+    </div>
+
+    <div>
+      <h3>Growth Website</h3>
+      <p>From £599 setup</p>
+      <p>Multi-page website, SEO structure, lead capture and analytics setup.</p>
+    </div>
+
+    <div>
+      <h3>Accountant Tool Package</h3>
+      <p>From £49/month</p>
+      <p>Client-facing calculators and lead capture tools for your website.</p>
+    </div>
+  </div>
+</section>
 
       {/* CTA */}
       <section style={{ padding: "60px 20px", textAlign: "center" }}>
