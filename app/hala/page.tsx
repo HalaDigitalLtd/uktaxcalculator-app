@@ -82,6 +82,17 @@ export default function HalaPage() {
     Claim This Offer
   </a>
 </section>
+      {/* TRUST */}
+<section style={{ padding: "60px 20px", textAlign: "center" }}>
+  <h2>Why Work With Hala Digital?</h2>
+
+  <div style={{ maxWidth: "900px", margin: "30px auto", display: "grid", gap: "20px" }}>
+    <p>✅ Built with real UK accountancy practice experience</p>
+    <p>✅ Focused on leads, not just design</p>
+    <p>✅ Tools and websites designed around accountant-client conversion</p>
+    <p>✅ Simple monthly support available after launch</p>
+  </div>
+</section>
 
       {/* CTA */}
       <section style={{ padding: "60px 20px", textAlign: "center" }}>
