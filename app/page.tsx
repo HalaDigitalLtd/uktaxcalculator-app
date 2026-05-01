@@ -476,17 +476,6 @@ function SummaryBox({
 }
 
 function LeadCaptureForm() {
-  const [submitted, setSubmitted] = useState(false);
-
-  if (submitted) {
-    return (
-      <div className="warning">
-        <strong>Demo lead captured.</strong>
-        <p>This is a prototype. In production, this will send the lead to the accountant dashboard and email notification.</p>
-      </div>
-    );
-  }
-
   return (
     <form
       className="leadForm"
