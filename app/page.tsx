@@ -482,6 +482,7 @@ function LeadCaptureForm() {
       action="https://formspree.io/f/xbdwlgdv"
       method="POST" 
     >
+      <input type="hidden" name="_next" value="https://uktaxcalculator.co.uk/thank-you" />
       <div className="field">
         <label>Name</label>
         <input name="name" placeholder="Your name" required />
