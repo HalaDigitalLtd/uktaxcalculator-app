@@ -506,6 +506,39 @@ function LeadCaptureForm() {
       </div>
       <div className="field full">
         <label>What do you need help with?</label>
+        <div className="field">
+  <label>Phone</label>
+  <input name="phone" placeholder="07xxxxxxxxx" required />
+</div>
+        <div className="field">
+  <label>Tax Year</label>
+  <select name="tax_year" required>
+    <option value="">Select</option>
+    <option>2025/26</option>
+    <option>2024/25</option>
+    <option>Earlier years</option>
+  </select>
+</div>
+        <div className="field">
+  <label>What do you need help with?</label>
+  <select name="service" required>
+    <option value="">Select</option>
+    <option>Self Assessment</option>
+    <option>Limited Company</option>
+    <option>Rental Income</option>
+    <option>Capital Gains</option>
+    <option>Other</option>
+  </select>
+</div>
+        <div className="field">
+  <label>How urgent is this?</label>
+  <select name="urgency" required>
+    <option value="">Select</option>
+    <option>Urgent (24 hours)</option>
+    <option>This week</option>
+    <option>No rush</option>
+  </select>
+</div>
         <textarea name="message" rows={3} placeholder="Self Assessment, sole trader, dividends, rental income..." required />
       </div>
       <button className="btn btnPrimary full" type="submit">
