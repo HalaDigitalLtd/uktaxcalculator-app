@@ -14,8 +14,7 @@ export default function HalaPage() {
 
         <div style={{ marginTop: "30px" }}>
           <a
-            href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20am%20interested%20in%20Hala%20Digital%20services.%20Can%20you%20please%20guide%20me?"
-            style={{
+            href="/quote"
               padding: "14px 24px",
               background: "#25D366",
               color: "white",
