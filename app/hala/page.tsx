@@ -55,6 +55,33 @@ export default function HalaPage() {
           <p>✔ Custom tax & VAT tools</p>
         </div>
       </section>
+      {/* OFFER */}
+<section style={{ padding: "60px 20px", background: "#eef6ff", textAlign: "center" }}>
+  <h2>Launch Your Accounting Website from £299</h2>
+
+  <p style={{ marginTop: "10px" }}>
+    Fully designed website + lead system + WhatsApp integration.
+  </p>
+
+  <p style={{ marginTop: "10px", fontWeight: "bold" }}>
+    Limited time: First 5 clients only
+  </p>
+
+  <a
+    href="https://wa.me/447884063169"
+    style={{
+      display: "inline-block",
+      marginTop: "20px",
+      padding: "14px 24px",
+      background: "#25D366",
+      color: "white",
+      borderRadius: "8px",
+      textDecoration: "none"
+    }}
+  >
+    Claim This Offer
+  </a>
+</section>
 
       {/* CTA */}
       <section style={{ padding: "60px 20px", textAlign: "center" }}>
