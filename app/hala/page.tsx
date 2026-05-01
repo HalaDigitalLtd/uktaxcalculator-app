@@ -12,30 +12,37 @@ export default function HalaPage() {
           We build modern websites, SEO systems, automation workflows and smart business tools for UK small businesses and professional firms.
         </p>
 
+        <p style={{ marginTop: "12px", fontSize: "16px", opacity: 0.85 }}>
+          Websites from £299 • Tools from £49/month • Free consultation
+        </p>
+
         <div style={{ marginTop: "30px" }}>
           <a
             href="/quote"
+            style={{
+              padding: "14px 24px",
+              background: "#f59e0b",
+              color: "white",
+              borderRadius: "8px",
+              textDecoration: "none",
+              marginRight: "10px",
+              display: "inline-block"
+            }}
+          >
+            Get Instant Website Quote
+          </a>
+
+          <a
+            href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20am%20interested%20in%20Hala%20Digital%20services.%20Can%20you%20please%20guide%20me?"
+            style={{
               padding: "14px 24px",
               background: "#25D366",
               color: "white",
               borderRadius: "8px",
               textDecoration: "none",
-              marginRight: "10px"
+              marginRight: "10px",
+              display: "inline-block"
             }}
-             >
-    Get Instant Website Quote
-  </a>
-
-  <a
-    href="https://wa.me/447884063169"
-    style={{
-      padding: "14px 24px",
-      background: "#25D366",
-      color: "white",
-      borderRadius: "8px",
-      textDecoration: "none",
-      marginRight: "10px"
-    }}
           >
             Start a Project
           </a>
@@ -47,16 +54,14 @@ export default function HalaPage() {
               background: "#2563eb",
               color: "white",
               borderRadius: "8px",
-              textDecoration: "none"
+              textDecoration: "none",
+              display: "inline-block"
             }}
           >
             View UK Tax Calculator
           </a>
         </div>
       </section>
-      <p style={{ marginTop: "10px", fontSize: "16px", opacity: 0.8 }}>
-  Websites from £299 • Tools from £49/month • Free consultation
-</p>
 
       {/* SERVICES */}
       <section style={{ padding: "60px 20px", textAlign: "center" }}>
@@ -143,20 +148,36 @@ export default function HalaPage() {
           We are building practical tools for tax, VAT, CIS, corporation tax and client lead generation.
         </p>
 
-        <a
-          href="https://www.uktaxcalculator.co.uk"
-          style={{
-            display: "inline-block",
-            marginTop: "20px",
-            padding: "14px 24px",
-            background: "#2563eb",
-            color: "white",
-            borderRadius: "8px",
-            textDecoration: "none"
-          }}
-        >
-          View UK Tax Calculator
-        </a>
+        <div style={{ marginTop: "20px" }}>
+          <a
+            href="https://www.uktaxcalculator.co.uk"
+            style={{
+              display: "inline-block",
+              padding: "14px 24px",
+              background: "#2563eb",
+              color: "white",
+              borderRadius: "8px",
+              textDecoration: "none",
+              marginRight: "10px"
+            }}
+          >
+            View UK Tax Calculator
+          </a>
+
+          <a
+            href="/quote"
+            style={{
+              display: "inline-block",
+              padding: "14px 24px",
+              background: "#f59e0b",
+              color: "white",
+              borderRadius: "8px",
+              textDecoration: "none"
+            }}
+          >
+            Get Website Quote
+          </a>
+        </div>
       </section>
 
       {/* FORM */}
@@ -197,12 +218,38 @@ export default function HalaPage() {
 
           <button
             type="submit"
-            style={{ padding: "14px", background: "#25D366", color: "white", borderRadius: "6px", border: "none", fontWeight: "bold" }}
+            style={{
+              padding: "14px",
+              background: "#25D366",
+              color: "white",
+              borderRadius: "6px",
+              border: "none",
+              fontWeight: "bold",
+              cursor: "pointer"
+            }}
           >
             Send enquiry
           </button>
         </form>
       </section>
+
+      {/* FLOATING WHATSAPP */}
+      <a
+        href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20am%20interested%20in%20Hala%20Digital%20services."
+        style={{
+          position: "fixed",
+          right: "20px",
+          bottom: "20px",
+          padding: "12px 18px",
+          background: "#25D366",
+          color: "white",
+          borderRadius: "999px",
+          textDecoration: "none",
+          fontWeight: "bold"
+        }}
+      >
+        WhatsApp
+      </a>
 
     </div>
   );
