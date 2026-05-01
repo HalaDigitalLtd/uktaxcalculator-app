@@ -22,7 +22,7 @@ export default function ThankYouPage() {
         </p>
 
         <a
-          href="https://wa.me/447884063169"
+          href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20have%20just%20used%20your%20tax%20calculator.%20I%20would%20like%20a%20professional%20review%20of%20my%20tax%20situation."
           style={{
             display: "inline-block",
             margin: "10px",
