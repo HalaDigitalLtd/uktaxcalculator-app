@@ -41,6 +41,9 @@ export default function HalaPage() {
           </a>
         </div>
       </section>
+      <p style={{ marginTop: "10px", fontSize: "16px", opacity: 0.8 }}>
+  Websites from £299 • Tools from £49/month • Free consultation
+</p>
 
       {/* SERVICES */}
       <section style={{ padding: "60px 20px", textAlign: "center" }}>
