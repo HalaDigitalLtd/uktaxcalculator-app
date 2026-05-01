@@ -490,22 +490,21 @@ function LeadCaptureForm() {
   return (
     <form
       className="leadForm"
-      onSubmit={(event) => {
-        event.preventDefault();
-        setSubmitted(true);
-      }}
+      action="https://formspree.io/f/xbdwlgdv"
+      method="POST" 
     >
       <div className="field">
         <label>Name</label>
-        <input placeholder="Your name" />
+        <input name="name" placeholder="Your name" required />
       </div>
       <div className="field">
         <label>Email</label>
-        <input type="email" placeholder="you@example.com" />
+        <input type="hidden" name="_subject" value="New UK Tax Lead" />
+        <input type="email" name="email" placeholder="you@example.com" required />
       </div>
       <div className="field full">
         <label>What do you need help with?</label>
-        <textarea rows={3} placeholder="Self Assessment, sole trader, dividends, rental income..." />
+        <textarea name="message" rows={3} placeholder="Self Assessment, sole trader, dividends, rental income..." required />
       </div>
       <button className="btn btnPrimary full" type="submit">
         Request accountant review
