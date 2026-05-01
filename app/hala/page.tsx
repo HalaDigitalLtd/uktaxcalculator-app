@@ -1,30 +1,43 @@
 export default function HalaPage() {
   return (
-    <div style={{ fontFamily: "sans-serif" }}>
+    <div style={{ fontFamily: "sans-serif", lineHeight: 1.6 }}>
 
       {/* HERO */}
       <section style={{ padding: "80px 20px", textAlign: "center" }}>
         <h1 style={{ fontSize: "42px", marginBottom: "20px" }}>
-          Hala Digital
+          Grow Your Accounting Firm 🚀
         </h1>
 
         <p style={{ fontSize: "20px", maxWidth: "700px", margin: "0 auto" }}>
-          We build digital tools, websites and lead generation systems for UK accountants and small businesses.
+          We build websites, tools and lead generation systems for UK accountants and small businesses.
         </p>
 
         <div style={{ marginTop: "30px" }}>
           <a
-            href="https://www.uktaxcalculator.co.uk"
+            href="https://wa.me/447884063169"
             style={{
-              padding: "12px 20px",
-              background: "#0070f3",
+              padding: "14px 24px",
+              background: "#25D366",
               color: "white",
               borderRadius: "8px",
               textDecoration: "none",
-              margin: "10px"
+              marginRight: "10px"
             }}
           >
-            View Our Tax Calculator
+            Get More Clients
+          </a>
+
+          <a
+            href="https://www.uktaxcalculator.co.uk"
+            style={{
+              padding: "14px 24px",
+              background: "#0070f3",
+              color: "white",
+              borderRadius: "8px",
+              textDecoration: "none"
+            }}
+          >
+            Try Free Tax Tool
           </a>
         </div>
       </section>
@@ -36,62 +49,35 @@ export default function HalaPage() {
         </h2>
 
         <div style={{ maxWidth: "900px", margin: "0 auto" }}>
-          <ul style={{ lineHeight: "2" }}>
-            <li>Website development for accountants and small businesses</li>
-            <li>SEO and lead generation systems</li>
-            <li>Tax and VAT calculators</li>
-            <li>Automation and client capture tools</li>
-            <li>White-label tools for accounting firms</li>
-          </ul>
-        </div>
-      </section>
-
-      {/* TOOLS */}
-      <section style={{ padding: "60px 20px", textAlign: "center" }}>
-        <h2>Our Tools</h2>
-
-        <p style={{ marginTop: "10px" }}>
-          Practical tools designed to bring real clients to your business.
-        </p>
-
-        <div style={{ marginTop: "30px" }}>
-          <a
-            href="https://www.uktaxcalculator.co.uk"
-            style={{
-              padding: "12px 20px",
-              background: "#111",
-              color: "white",
-              borderRadius: "8px",
-              textDecoration: "none"
-            }}
-          >
-            UK Tax Calculator
-          </a>
+          <p>✔ High-converting websites for accountants</p>
+          <p>✔ SEO & Google ranking services</p>
+          <p>✔ Lead generation funnels</p>
+          <p>✔ Custom tax & VAT tools</p>
         </div>
       </section>
 
       {/* CTA */}
-      <section style={{ padding: "80px 20px", textAlign: "center", background: "#111", color: "white" }}>
-        <h2>Want more clients for your business?</h2>
+      <section style={{ padding: "60px 20px", textAlign: "center" }}>
+        <h2>Want more clients every month?</h2>
 
         <p style={{ marginTop: "10px" }}>
-          We help accountants and businesses generate leads using smart tools and websites.
+          We help accountants generate consistent leads using smart digital systems.
         </p>
 
-        <div style={{ marginTop: "20px" }}>
-          <a
-            href="mailto:ikramzaman@gmail.com"
-            style={{
-              padding: "12px 20px",
-              background: "#25D366",
-              color: "white",
-              borderRadius: "8px",
-              textDecoration: "none"
-            }}
-          >
-            Contact Us
-          </a>
-        </div>
+        <a
+          href="https://wa.me/447884063169"
+          style={{
+            display: "inline-block",
+            marginTop: "20px",
+            padding: "14px 24px",
+            background: "#25D366",
+            color: "white",
+            borderRadius: "8px",
+            textDecoration: "none"
+          }}
+        >
+          Chat on WhatsApp
+        </a>
       </section>
 
     </div>
