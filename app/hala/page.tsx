@@ -46,6 +46,9 @@ export default function HalaPage() {
           </a>
         </div>
       </section>
+      <p style={{ marginTop: "30px", fontSize: "14px", color: "#94a3b8" }}>
+  Website design UK • SEO services UK • Small business websites • Accountant website design • Business automation tools UK
+</p>
 
       {/* SERVICES */}
       <section style={{ padding: "70px 20px", background: "#f8fafc" }}>
