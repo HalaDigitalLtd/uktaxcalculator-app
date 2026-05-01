@@ -479,10 +479,23 @@ function LeadCaptureForm() {
   return (
     <form
       className="leadForm"
-      action="https://formspree.io/f/xbdwlgdv"
-      method="POST" 
+      onSubmit={async (e) => {
+    e.preventDefault();
+
+    const formData = new FormData(e.currentTarget);
+
+    await fetch("https://formspree.io/f/xbdwlgdv", {
+      method: "POST",
+      body: formData,
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    window.location.href = "/thank-you";
+  }}
+>
     >
-      <input type="hidden" name="_next" value="https://uktaxcalculator.co.uk/thank-you" />
       <div className="field">
         <label>Name</label>
         <input name="name" placeholder="Your name" required />
