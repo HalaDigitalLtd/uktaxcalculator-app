@@ -73,6 +73,48 @@ export default function HalaPage() {
           </div>
         </div>
       </section>
+      {/* PORTFOLIO */}
+<section style={{ padding: "70px 20px", background: "#ffffff", textAlign: "center" }}>
+  <h2 style={{ fontSize: "34px" }}>Example Work</h2>
+
+  <p style={{ maxWidth: "700px", margin: "10px auto 30px", color: "#475569" }}>
+    Simple, clean and conversion-focused websites and tools built for real businesses.
+  </p>
+
+  <div style={{
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+    gap: "20px",
+    maxWidth: "1000px",
+    margin: "0 auto"
+  }}>
+    
+    <div style={{ padding: "20px", border: "1px solid #e2e8f0", borderRadius: "12px" }}>
+      <h3>UK Tax Calculator</h3>
+      <p>High-converting tax calculator with lead capture and WhatsApp funnel.</p>
+      <a href="https://www.uktaxcalculator.co.uk" style={{ color: "#2563eb" }}>
+        View Project →
+      </a>
+    </div>
+
+    <div style={{ padding: "20px", border: "1px solid #e2e8f0", borderRadius: "12px" }}>
+      <h3>Lead Capture Website</h3>
+      <p>Business website with enquiry forms, WhatsApp and conversion-focused design.</p>
+      <span style={{ color: "#64748b" }}>
+        Built for service-based businesses
+      </span>
+    </div>
+
+    <div style={{ padding: "20px", border: "1px solid #e2e8f0", borderRadius: "12px" }}>
+      <h3>Quote Calculator</h3>
+      <p>Interactive pricing tool to generate high-quality leads automatically.</p>
+      <a href="/quote" style={{ color: "#2563eb" }}>
+        Try Tool →
+      </a>
+    </div>
+
+  </div>
+</section>
 
       {/* OFFER */}
       <section style={{ padding: "70px 20px", textAlign: "center", background: "#eef6ff" }}>
