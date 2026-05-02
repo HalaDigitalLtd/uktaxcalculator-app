@@ -84,8 +84,41 @@ export default function VatSicPage() {
         </p>
 
         <p style={{ marginTop: "14px", fontSize: "15px", opacity: 0.85 }}>
-          Built for accountants, bookkeepers and VAT review workflows.
+          Free preview available. Full database access will be limited to paid users and early-access members.
         </p>
+
+        <div style={{ marginTop: "28px" }}>
+          <a
+            href="#early-access-form"
+            style={{
+              display: "inline-block",
+              padding: "14px 24px",
+              background: "#25D366",
+              color: "white",
+              borderRadius: "10px",
+              textDecoration: "none",
+              fontWeight: "bold",
+              marginRight: "10px",
+            }}
+          >
+            Request Early Access
+          </a>
+
+          <a
+            href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20am%20interested%20in%20the%20VAT%20SIC%20Code%20Intelligence%20Tool."
+            style={{
+              display: "inline-block",
+              padding: "14px 24px",
+              background: "#2563eb",
+              color: "white",
+              borderRadius: "10px",
+              textDecoration: "none",
+              fontWeight: "bold",
+            }}
+          >
+            Ask on WhatsApp
+          </a>
+        </div>
       </section>
 
       <section style={{ padding: "60px 20px", background: "#f8fafc" }}>
@@ -95,8 +128,8 @@ export default function VatSicPage() {
           </h2>
 
           <p style={{ textAlign: "center", color: "#475569", maxWidth: "720px", margin: "10px auto 30px" }}>
-            This preview shows a limited sample only. The full tool will include detailed VAT treatment,
-            risk scoring, HMRC reference notes, client questions and review flags.
+            This preview shows limited sample data only. The full tool will include detailed VAT treatment,
+            risk scoring, HMRC reference prompts, client questions and review flags.
           </p>
 
           <input
@@ -173,6 +206,9 @@ export default function VatSicPage() {
             <div style={{ marginTop: "25px", padding: "20px", background: "white", borderRadius: "14px", textAlign: "center" }}>
               <strong>No preview result found.</strong>
               <p>Request access to the full SIC/VAT database for wider coverage.</p>
+              <a href="#early-access-form" style={{ color: "#2563eb", fontWeight: "bold" }}>
+                Join early access →
+              </a>
             </div>
           ) : null}
         </div>
@@ -186,7 +222,15 @@ export default function VatSicPage() {
           likely VAT treatment, registration risk, exempt/mixed supplies and areas requiring specialist review.
         </p>
 
-        <div style={{ maxWidth: "900px", margin: "35px auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "18px" }}>
+        <div
+          style={{
+            maxWidth: "900px",
+            margin: "35px auto",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: "18px",
+          }}
+        >
           {[
             "707+ SIC code reference",
             "VAT treatment categories",
@@ -195,14 +239,22 @@ export default function VatSicPage() {
             "HMRC reference prompts",
             "Client review questions",
           ].map((text) => (
-            <div key={text} style={{ background: "white", padding: "20px", borderRadius: "14px", boxShadow: "0 8px 25px rgba(15,23,42,0.06)" }}>
+            <div
+              key={text}
+              style={{
+                background: "white",
+                padding: "20px",
+                borderRadius: "14px",
+                boxShadow: "0 8px 25px rgba(15,23,42,0.06)",
+              }}
+            >
               ✅ {text}
             </div>
           ))}
         </div>
 
         <a
-          href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20am%20interested%20in%20the%20VAT%20SIC%20Code%20Intelligence%20Tool."
+          href="#early-access-form"
           style={{
             display: "inline-block",
             padding: "14px 24px",
@@ -215,13 +267,26 @@ export default function VatSicPage() {
         >
           Request Early Access
         </a>
+
+        <p style={{ marginTop: "14px", color: "#475569" }}>
+          Prefer a quick chat?
+          <a
+            href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20am%20interested%20in%20the%20VAT%20SIC%20Code%20Intelligence%20Tool."
+            style={{ color: "#2563eb", marginLeft: "6px", fontWeight: "bold" }}
+          >
+            Message us on WhatsApp
+          </a>
+        </p>
       </section>
 
-      <section style={{ padding: "70px 20px", background: "#0f172a", color: "white", textAlign: "center" }}>
+      <section
+        id="early-access-form"
+        style={{ padding: "70px 20px", background: "#0f172a", color: "white", textAlign: "center" }}
+      >
         <h2 style={{ fontSize: "34px" }}>Join the Early Access List</h2>
 
         <p style={{ maxWidth: "720px", margin: "10px auto", opacity: 0.85 }}>
-          Tell us your details and we’ll notify you when the full VAT/SIC tool is ready.
+          Submit your details and we’ll notify you when the full VAT/SIC tool is ready.
         </p>
 
         <form
@@ -230,6 +295,7 @@ export default function VatSicPage() {
           style={{ maxWidth: "520px", margin: "30px auto", display: "grid", gap: "12px" }}
         >
           <input type="hidden" name="_subject" value="VAT SIC Tool Early Access Request" />
+          <input type="hidden" name="tool" value="VAT SIC Code Intelligence Checker" />
 
           <input name="name" placeholder="Name" required style={{ padding: "14px", borderRadius: "8px", border: "none" }} />
           <input name="email" type="email" placeholder="Email" required style={{ padding: "14px", borderRadius: "8px", border: "none" }} />
@@ -267,6 +333,16 @@ export default function VatSicPage() {
             Request access
           </button>
         </form>
+
+        <p style={{ marginTop: "12px", opacity: 0.8 }}>
+          Prefer WhatsApp?
+          <a
+            href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20am%20interested%20in%20the%20VAT%20SIC%20Code%20Intelligence%20Tool."
+            style={{ color: "#25D366", marginLeft: "6px", fontWeight: "bold" }}
+          >
+            Chat now
+          </a>
+        </p>
       </section>
     </div>
   );
