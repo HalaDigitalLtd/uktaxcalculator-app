@@ -45,6 +45,12 @@ export default function VatPropertyPage() {
             Get Expert Advice
           </a>
         </div>
+        <h3>Related tools and guides</h3>
+
+<ul>
+  <li><a href="/vat-sic">VAT SIC Code Checker</a></li>
+  <li><a href="/vat-registration">VAT Registration Guide</a></li>
+</ul>
       </main>
     </div>
   );
