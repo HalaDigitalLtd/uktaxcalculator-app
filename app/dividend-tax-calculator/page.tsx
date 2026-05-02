@@ -103,6 +103,14 @@ export default function DividendTaxCalculatorPage() {
 
           <h3>Do I need to file Self Assessment?</h3>
           <p>Yes, if dividends exceed the allowance or HMRC requires it.</p>
+          <div style={{ marginTop: "30px" }}>
+  <h3>Related tools</h3>
+  <ul>
+    <li><a href="/self-assessment-calculator">Self Assessment Calculator</a></li>
+    <li><a href="/company-formation">Company Formation</a></li>
+    <li><a href="/vat-registration">VAT Registration Guide</a></li>
+  </ul>
+</div>
 
         </div>
       </section>
