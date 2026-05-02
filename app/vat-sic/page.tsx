@@ -343,6 +343,12 @@ export default function VatSicPage() {
             Chat now
           </a>
         </p>
+        <h3>Learn more about VAT</h3>
+
+<ul>
+  <li><a href="/vat-registration">Do I need to register for VAT?</a></li>
+  <li><a href="/vat-property">VAT on Property explained</a></li>
+</ul>
       </section>
     </div>
   );
