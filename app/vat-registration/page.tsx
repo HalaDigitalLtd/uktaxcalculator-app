@@ -92,6 +92,19 @@ If you are unsure whether you need to register for VAT in the UK based on your t
             Ask for VAT Review
           </a>
         </div>
+        <h2>Common questions about VAT registration in the UK</h2>
+
+<p><strong>When do I need to register for VAT in the UK?</strong><br/>
+You must register for VAT if your taxable turnover exceeds the VAT registration threshold within a rolling 12-month period.</p>
+
+<p><strong>What is the VAT threshold in the UK?</strong><br/>
+The VAT threshold is currently £90,000. If your business turnover exceeds this, VAT registration is required.</p>
+
+<p><strong>Do I need to register for VAT if I am below the threshold?</strong><br/>
+You can register voluntarily, which may be beneficial if you incur VAT on costs.</p>
+
+<p><strong>What happens if I register late?</strong><br/>
+Late registration can result in penalties and interest, so it is important to monitor your turnover carefully.</p>
        <h3>Related tools and guides</h3>
 
 <ul>
