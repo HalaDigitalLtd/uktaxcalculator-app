@@ -11,6 +11,22 @@ export default function VatRegistrationPage() {
 
       <main style={{ maxWidth: "900px", margin: "0 auto", padding: "60px 20px" }}>
         <h2>When VAT registration is required</h2>
+        <h2>VAT registration threshold in the UK</h2>
+
+<p>
+As of the current tax rules, a business must register for VAT if its taxable turnover exceeds the VAT registration threshold in a rolling 12-month period.
+</p>
+
+<p>
+The VAT threshold in the UK is currently £90,000. This includes standard-rated, reduced-rated and zero-rated sales.
+</p>
+
+<p>
+If your turnover is close to this threshold, it is important to monitor it monthly to avoid late registration penalties.
+</p>
+        <p>
+If you are unsure whether you need to register for VAT in the UK based on your turnover, it is advisable to review your position early.
+</p>
         <p>
           A UK business normally needs to register for VAT when its taxable turnover exceeds the VAT registration threshold in a rolling 12-month period.
           Taxable turnover includes standard-rated, reduced-rated and zero-rated supplies.
