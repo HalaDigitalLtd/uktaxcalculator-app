@@ -740,54 +740,60 @@ export default function Home() {
     Transparent pricing. No hidden fees.
   </p>
 </div>
-        <div style={{
-  marginTop: "50px",
-  padding: "30px",
-  background: "#eef6ff",
-  borderRadius: "12px",
-  textAlign: "center"
-}}>
-  <h3>Starting a new limited company?</h3>
-
-  <p style={{ marginTop: "10px", maxWidth: "600px", marginInline: "auto" }}>
-    We help you set up your UK limited company and complete required identity verification 
-    through an authorised Companies House agent.
-  </p>
-
-  <div style={{ marginTop: "20px" }}>
-    <a
-      href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20want%20to%20set%20up%20a%20limited%20company."
+ <section className="section">
+  <div className="container">
+    <div
       style={{
-        padding: "12px 20px",
-        background: "#25D366",
-        color: "white",
-        borderRadius: "8px",
-        textDecoration: "none",
-        marginRight: "10px"
+        marginTop: "20px",
+        padding: "30px",
+        background: "#eef6ff",
+        borderRadius: "12px",
+        textAlign: "center",
       }}
     >
-      Start on WhatsApp
-    </a>
+      <h3>Starting a new limited company?</h3>
 
-    <a
-      href="/quote"
-      style={{
-        padding: "12px 20px",
-        background: "#2563eb",
-        color: "white",
-        borderRadius: "8px",
-        textDecoration: "none"
-      }}
-    >
-      Get Formation Quote
-    </a>
+      <p style={{ marginTop: "10px", maxWidth: "650px", marginInline: "auto" }}>
+        We help you set up your UK limited company, complete Companies House filing and arrange identity verification through an authorised Companies House agent.
+      </p>
+
+      <div style={{ marginTop: "20px" }}>
+        <a
+          href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20want%20to%20set%20up%20a%20limited%20company."
+          style={{
+            padding: "12px 20px",
+            background: "#25D366",
+            color: "white",
+            borderRadius: "8px",
+            textDecoration: "none",
+            marginRight: "10px",
+            display: "inline-block",
+          }}
+        >
+          Start on WhatsApp
+        </a>
+
+        <a
+          href="https://haladigital.co.uk/quote"
+          style={{
+            padding: "12px 20px",
+            background: "#2563eb",
+            color: "white",
+            borderRadius: "8px",
+            textDecoration: "none",
+            display: "inline-block",
+          }}
+        >
+          Get Formation Quote
+        </a>
+      </div>
+
+      <p style={{ marginTop: "10px", fontSize: "14px", opacity: 0.8 }}>
+        Company formation, compliance guidance and accountant support available.
+      </p>
+    </div>
   </div>
-
-  <p style={{ marginTop: "10px", fontSize: "14px", opacity: 0.8 }}>
-    Includes Companies House filing and compliance guidance.
-  </p>
-</div>
-
+</section>
         <section className="section">
           <div className="container">
             <div className="disclaimer">
