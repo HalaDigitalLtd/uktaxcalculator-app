@@ -281,6 +281,9 @@ export default function HalaPage() {
     <a href="/vat-sic">
       VAT SIC Tool
     </a>
+    <a href="/how-to-start-a-limited-company-uk" style={{ marginLeft: "10px" }}>
+  How to Start a Limited Company
+</a>
   </div>
 </section>
 
