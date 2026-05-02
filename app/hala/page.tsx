@@ -50,6 +50,12 @@ export default function HalaPage() {
 >
   Try VAT SIC Tool
 </a>
+          <a
+  href="/company-formation"
+  style={{ ...buttonStyle, background: "#9333ea", color: "white" }}
+>
+  Start a Limited Company
+</a>
         </div>
       </section>
       <p style={{ marginTop: "30px", fontSize: "14px", color: "#94a3b8" }}>
