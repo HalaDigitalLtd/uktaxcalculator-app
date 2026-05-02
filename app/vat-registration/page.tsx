@@ -105,6 +105,50 @@ You can register voluntarily, which may be beneficial if you incur VAT on costs.
 
 <p><strong>What happens if I register late?</strong><br/>
 Late registration can result in penalties and interest, so it is important to monitor your turnover carefully.</p>
+        <div style={{ 
+  marginTop: "40px", 
+  padding: "25px", 
+  background: "#f0fdf4", 
+  borderRadius: "10px",
+  textAlign: "center"
+}}>
+  <h3>Not sure if you need to register for VAT?</h3>
+
+  <p style={{ marginTop: "10px" }}>
+    Get a quick review of your situation and avoid penalties.
+  </p>
+
+  <div style={{ marginTop: "20px" }}>
+    <a
+      href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20need%20help%20checking%20whether%20I%20need%20to%20register%20for%20VAT."
+      style={{
+        padding: "12px 20px",
+        background: "#25D366",
+        color: "white",
+        borderRadius: "8px",
+        textDecoration: "none",
+        marginRight: "10px",
+        display: "inline-block"
+      }}
+    >
+      Chat on WhatsApp
+    </a>
+
+    <a
+      href="/quote"
+      style={{
+        padding: "12px 20px",
+        background: "#2563eb",
+        color: "white",
+        borderRadius: "8px",
+        textDecoration: "none",
+        display: "inline-block"
+      }}
+    >
+      Get Professional Advice
+    </a>
+  </div>
+</div>
        <h3>Related tools and guides</h3>
 
 <ul>
