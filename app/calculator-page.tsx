@@ -599,6 +599,37 @@ function CalculatorSection() {
                   Estimated payments on account may be required. Each payment would be approximately {money(result.nextYearPOAEach)}.
                 </div>
               )}
+              {result.riskFlags.length > 0 && (
+  <div style={{
+    marginTop: "20px",
+    padding: "20px",
+    background: "#fee2e2",
+    borderRadius: "10px"
+  }}>
+    <h4>⚠️ Important based on your inputs</h4>
+
+    <ul>
+      {result.riskFlags.slice(0,2).map(flag => (
+        <li key={flag}>{flag}</li>
+      ))}
+    </ul>
+
+    <a
+      href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20need%20help%20reviewing%20my%20tax%20calculation."
+      style={{
+        display: "inline-block",
+        marginTop: "10px",
+        padding: "10px 16px",
+        background: "#dc2626",
+        color: "white",
+        borderRadius: "6px",
+        textDecoration: "none"
+      }}
+    >
+      Get this reviewed by an expert
+    </a>
+  </div>
+)}
             </div>
 
             <div className="ctaPanel">
