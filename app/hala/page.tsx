@@ -108,9 +108,19 @@ export default function HalaPage() {
       textDecoration: "none",
       fontWeight: "bold"
     }}
-  >
-    Start a UK Limited Company →
-  </a>
+    <a
+  href="/website-design-for-small-business-uk"
+  style={{ ...buttonStyle, background: "#f59e0b", color: "white", marginRight: "10px" }}
+>
+  Website Design for Small Businesses
+</a>
+
+<a
+  href="/company-formation"
+  style={buttonStyle}
+>
+  Start a UK Limited Company →
+</a>
 </div>
         </div>
       </section>
