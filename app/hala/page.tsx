@@ -56,6 +56,12 @@ export default function HalaPage() {
 >
   Start a Limited Company
 </a>
+          <a
+  href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20want%20to%20start%20a%20limited%20company.%20Can%20you%20guide%20me?"
+  style={{ ...buttonStyle, background: "#25D366", color: "white" }}
+>
+  WhatsApp Us
+</a>
         </div>
       </section>
       <p style={{ marginTop: "30px", fontSize: "14px", color: "#94a3b8" }}>
