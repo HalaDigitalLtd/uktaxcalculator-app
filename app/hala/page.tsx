@@ -294,6 +294,9 @@ export default function HalaPage() {
     <a href="/self-assessment-calculator" style={{ marginLeft: "10px" }}>
   Self Assessment Calculator
 </a>
+    <a href="/dividend-tax-calculator" style={{ marginLeft: "10px" }}>
+  Dividend Tax Calculator
+</a>
   </div>
 </section>
 
