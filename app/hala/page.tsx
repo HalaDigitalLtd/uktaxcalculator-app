@@ -240,6 +240,21 @@ export default function HalaPage() {
           </button>
         </form>
       </section>
+      <section style={{ padding: "50px 20px", textAlign: "center" }}>
+  <h2>Free VAT and Tax Resources</h2>
+
+  <div style={{ marginTop: "20px" }}>
+    <a href="/vat-registration" style={{ marginRight: "10px" }}>
+      VAT Registration Guide
+    </a>
+    <a href="/vat-property" style={{ marginRight: "10px" }}>
+      VAT on Property
+    </a>
+    <a href="/vat-sic">
+      VAT SIC Tool
+    </a>
+  </div>
+</section>
 
       {/* FLOATING WHATSAPP */}
       <a
