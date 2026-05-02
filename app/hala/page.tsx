@@ -284,6 +284,9 @@ export default function HalaPage() {
     <a href="/how-to-start-a-limited-company-uk" style={{ marginLeft: "10px" }}>
   How to Start a Limited Company
 </a>
+    <a href="/self-assessment-calculator" style={{ marginLeft: "10px" }}>
+  Self Assessment Calculator
+</a>
   </div>
 </section>
 
