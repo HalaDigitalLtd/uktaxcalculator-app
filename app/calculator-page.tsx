@@ -640,6 +640,22 @@ function CalculatorSection() {
               <p style={{ marginTop: "10px", fontWeight: "bold" }}>
                 ⚡ Most reviews identify savings or corrections.
               </p>
+              <div style={{ marginTop: "15px" }}>
+  <a
+    href="https://haladigital.co.uk/company-formation"
+    style={{
+      display: "inline-block",
+      padding: "12px 18px",
+      background: "#0f172a",
+      color: "white",
+      borderRadius: "6px",
+      textDecoration: "none",
+      fontWeight: "bold"
+    }}
+  >
+    Starting a business? Set up your LTD company →
+  </a>
+</div>
               <LeadCaptureForm />
             </div>
           </div>
