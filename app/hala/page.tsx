@@ -29,7 +29,7 @@ export default function HalaPage() {
           Websites from £299 • Tools from £49/month • Free consultation
         </p>
 
-        <div style={{ marginTop: "30px" }}>
+        <div style={{ marginTop: "30px", display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "10px" }}>
           <a href="/quote" style={{ ...buttonStyle, background: "#f59e0b", color: "white" }}>
             Get Instant Website Quote
           </a>
@@ -44,6 +44,12 @@ export default function HalaPage() {
           <a href="https://www.uktaxcalculator.co.uk" style={{ ...buttonStyle, background: "#2563eb", color: "white" }}>
             View Tax Calculator
           </a>
+          <a
+  href="/vat-sic"
+  style={{ ...buttonStyle, background: "#0f172a", color: "white" }}
+>
+  Try VAT SIC Tool
+</a>
         </div>
       </section>
       <p style={{ marginTop: "30px", fontSize: "14px", color: "#94a3b8" }}>
