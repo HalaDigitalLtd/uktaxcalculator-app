@@ -873,6 +873,22 @@ export default function Home() {
         <section className="section">
           <div className="container">
             <div className="disclaimer">
+              <div style={{ marginTop: "20px" }}>
+  <a
+    href="/how-to-start-a-limited-company-uk"
+    style={{
+      display: "inline-block",
+      padding: "10px 16px",
+      background: "#eef6ff",
+      color: "#0f172a",
+      borderRadius: "6px",
+      textDecoration: "none",
+      fontWeight: "bold"
+    }}
+  >
+    Thinking of starting a business? Read this guide →
+  </a>
+</div>
               <strong>Important disclaimer:</strong> This tool provides estimated calculations and general guidance only. It does not replace professional tax advice. Final tax figures should be reviewed by a qualified accountant before submission to HMRC. Scottish income tax, CGT, HICBC, foreign income, residence issues, property finance restriction and complex student loan cases require professional review.
             </div>
           </div>
