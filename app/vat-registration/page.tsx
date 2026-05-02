@@ -76,7 +76,12 @@ export default function VatRegistrationPage() {
             Ask for VAT Review
           </a>
         </div>
+       <h3>Related tools and guides</h3>
 
+<ul>
+  <li><a href="/vat-sic">VAT SIC Code Checker</a></li>
+  <li><a href="/vat-property">VAT on Property Guide</a></li>
+</ul>
         <p style={{ marginTop: "35px", fontSize: "14px", color: "#64748b" }}>
           This page is for general information only and does not constitute tax advice. VAT treatment should be reviewed based on the specific facts.
         </p>
@@ -84,9 +89,3 @@ export default function VatRegistrationPage() {
     </div>
   );
 }
-<h3>Related tools and guides</h3>
-
-<ul>
-  <li><a href="/vat-sic">VAT SIC Code Checker</a></li>
-  <li><a href="/vat-property">VAT on Property Guide</a></li>
-</ul>
