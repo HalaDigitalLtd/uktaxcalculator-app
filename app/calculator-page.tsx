@@ -693,6 +693,100 @@ export default function Home() {
         </section>
 
         <CalculatorSection />
+        <div style={{
+  marginTop: "50px",
+  padding: "30px",
+  background: "#fef3c7",
+  borderRadius: "12px",
+  textAlign: "center"
+}}>
+  <h3>Need help staying MTD compliant?</h3>
+
+  <p style={{ marginTop: "10px", maxWidth: "600px", marginInline: "auto" }}>
+    Making Tax Digital is changing how businesses report to HMRC. 
+    Avoid penalties and get your tax returns handled correctly by a UK accountant.
+  </p>
+
+  <div style={{ marginTop: "20px" }}>
+    <a
+      href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20need%20help%20with%20MTD%20and%20tax%20returns."
+      style={{
+        padding: "12px 20px",
+        background: "#25D366",
+        color: "white",
+        borderRadius: "8px",
+        textDecoration: "none",
+        marginRight: "10px"
+      }}
+    >
+      Chat on WhatsApp
+    </a>
+
+    <a
+      href="/quote"
+      style={{
+        padding: "12px 20px",
+        background: "#2563eb",
+        color: "white",
+        borderRadius: "8px",
+        textDecoration: "none"
+      }}
+    >
+      Get a Quote
+    </a>
+  </div>
+
+  <p style={{ marginTop: "10px", fontSize: "14px", opacity: 0.8 }}>
+    Transparent pricing. No hidden fees.
+  </p>
+</div>
+        <div style={{
+  marginTop: "50px",
+  padding: "30px",
+  background: "#eef6ff",
+  borderRadius: "12px",
+  textAlign: "center"
+}}>
+  <h3>Starting a new limited company?</h3>
+
+  <p style={{ marginTop: "10px", maxWidth: "600px", marginInline: "auto" }}>
+    We help you set up your UK limited company and complete required identity verification 
+    through an authorised Companies House agent.
+  </p>
+
+  <div style={{ marginTop: "20px" }}>
+    <a
+      href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20want%20to%20set%20up%20a%20limited%20company."
+      style={{
+        padding: "12px 20px",
+        background: "#25D366",
+        color: "white",
+        borderRadius: "8px",
+        textDecoration: "none",
+        marginRight: "10px"
+      }}
+    >
+      Start on WhatsApp
+    </a>
+
+    <a
+      href="/quote"
+      style={{
+        padding: "12px 20px",
+        background: "#2563eb",
+        color: "white",
+        borderRadius: "8px",
+        textDecoration: "none"
+      }}
+    >
+      Get Formation Quote
+    </a>
+  </div>
+
+  <p style={{ marginTop: "10px", fontSize: "14px", opacity: 0.8 }}>
+    Includes Companies House filing and compliance guidance.
+  </p>
+</div>
 
         <section className="section">
           <div className="container">
