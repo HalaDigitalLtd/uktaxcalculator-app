@@ -45,6 +45,12 @@ export default function HalaPage() {
             View Tax Calculator
           </a>
           <a
+  href="/self-assessment-calculator"
+  style={{ ...buttonStyle, background: "#16a34a", color: "white" }}
+>
+  Self Assessment Calculator
+</a>
+          <a
   href="/vat-sic"
   style={{ ...buttonStyle, background: "#0f172a", color: "white" }}
 >
@@ -62,6 +68,7 @@ export default function HalaPage() {
 >
   WhatsApp Us
 </a>
+        
         </div>
       </section>
       <p style={{ marginTop: "30px", fontSize: "14px", color: "#94a3b8" }}>
