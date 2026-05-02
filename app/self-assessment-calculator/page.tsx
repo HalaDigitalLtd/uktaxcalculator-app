@@ -158,6 +158,7 @@ export default function SelfAssessmentCalculatorPage() {
             <li><a href="/vat-sic">VAT SIC Code Checker</a></li>
             <li><a href="/company-formation">Company Formation Enquiry</a></li>
             <li><a href="/how-to-start-a-limited-company-uk">How to Start a Limited Company</a></li>
+            <li><a href="/dividend-tax-calculator">Dividend Tax Calculator</a></li>
           </ul>
         </div>
 
