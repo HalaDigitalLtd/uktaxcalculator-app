@@ -826,6 +826,35 @@ export default function Home() {
   </div>
 </section>
         <section className="section">
+  <div className="container">
+    <div className="grid3">
+      <div className="featureCard">
+        <h3>MTD Tax Support</h3>
+        <p>Get help becoming MTD-ready and keeping your tax records compliant.</p>
+        <a href="https://wa.me/447884063169?text=Hi%20Ikram,%20I%20need%20help%20with%20MTD%20tax%20support.">
+          Enquire about MTD →
+        </a>
+      </div>
+
+      <div className="featureCard">
+        <h3>Company Formation</h3>
+        <p>Set up your UK limited company with accountant support and compliance guidance.</p>
+        <a href="https://haladigital.co.uk/company-formation">
+          Start company setup →
+        </a>
+      </div>
+
+      <div className="featureCard">
+        <h3>VAT SIC Tool</h3>
+        <p>Check likely VAT treatment and risk flags by SIC code.</p>
+        <a href="https://haladigital.co.uk/vat-sic">
+          Try VAT SIC tool →
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+        <section className="section">
           <div className="container">
             <div className="disclaimer">
               <strong>Important disclaimer:</strong> This tool provides estimated calculations and general guidance only. It does not replace professional tax advice. Final tax figures should be reviewed by a qualified accountant before submission to HMRC. Scottish income tax, CGT, HICBC, foreign income, residence issues, property finance restriction and complex student loan cases require professional review.
