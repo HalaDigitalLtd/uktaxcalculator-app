@@ -84,3 +84,9 @@ export default function VatRegistrationPage() {
     </div>
   );
 }
+<h3>Related tools and guides</h3>
+
+<ul>
+  <li><a href="/vat-sic">VAT SIC Code Checker</a></li>
+  <li><a href="/vat-property">VAT on Property Guide</a></li>
+</ul>
