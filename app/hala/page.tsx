@@ -77,6 +77,22 @@ export default function HalaPage() {
               </div>
             ))}
           </div>
+          <div style={{ marginTop: "30px" }}>
+  <a
+    href="/company-formation"
+    style={{
+      display: "inline-block",
+      padding: "14px 24px",
+      background: "#0f172a",
+      color: "white",
+      borderRadius: "10px",
+      textDecoration: "none",
+      fontWeight: "bold"
+    }}
+  >
+    Start a UK Limited Company →
+  </a>
+</div>
         </div>
       </section>
       {/* PORTFOLIO */}
