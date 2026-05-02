@@ -108,7 +108,7 @@ export default function HalaPage() {
       textDecoration: "none",
       fontWeight: "bold"
     }}
-    <a
+   <a
   href="/website-design-for-small-business-uk"
   style={{ ...buttonStyle, background: "#f59e0b", color: "white", marginRight: "10px" }}
 >
@@ -116,6 +116,11 @@ export default function HalaPage() {
 </a>
 
 <a
+  href="/company-formation"
+  style={{ ...buttonStyle, background: "#0f172a", color: "white" }}
+>
+  Start a UK Limited Company →
+</a>
   href="/company-formation"
   style={buttonStyle}
 >
