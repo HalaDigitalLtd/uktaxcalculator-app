@@ -173,14 +173,14 @@ const riskMap: Record<string, string[]> = {
 };
 
 function getFirmFromUrl() {
-  if (typeof window === "undefined") return "hala";
+  if (typeof window === "undefined") return "default";
   const params = new URLSearchParams(window.location.search);
   return params.get("firm") || "default";
 }
 
 export default function SmartSAIntake() {
   const firmKey = getFirmFromUrl();
-  const firm = firmConfig[firmKey] || firmConfig.hala;
+  const firm = firmConfig[firmKey] || firmConfig.default;
   const isUnknownFirm = !firmConfig[firmKey];
 
   const [answers, setAnswers] = useState<Answers>({});
