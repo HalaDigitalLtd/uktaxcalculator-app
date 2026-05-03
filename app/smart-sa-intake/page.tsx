@@ -5,6 +5,41 @@ import { useMemo, useState } from "react";
 type Answers = Record<string, boolean>;
 type Status = Record<string, string>;
 
+type FirmConfig = {
+  name: string;
+  formEndpoint: string;
+  contactEmail?: string;
+};
+
+const DEFAULT_FORM_ENDPOINT = "https://formspree.io/f/xbdwlgdv";
+
+const firmConfig: Record<string, FirmConfig> = {
+  hala: {
+    name: "Hala Digital Demo",
+    formEndpoint: DEFAULT_FORM_ENDPOINT,
+  },
+
+  bnw: {
+    name: "BNW Accountants",
+    formEndpoint: DEFAULT_FORM_ENDPOINT,
+  },
+
+  firm001: {
+    name: "Firm 001",
+    formEndpoint: DEFAULT_FORM_ENDPOINT,
+  },
+
+  firm002: {
+    name: "Firm 002",
+    formEndpoint: DEFAULT_FORM_ENDPOINT,
+  },
+
+  firm003: {
+    name: "Firm 003",
+    formEndpoint: DEFAULT_FORM_ENDPOINT,
+  },
+};
+
 const incomeTypes = [
   ["employment", "Employment income"],
   ["self", "Self-employed / CIS"],
@@ -24,14 +59,30 @@ const documentMap: Record<string, string[]> = {
 };
 
 const riskMap: Record<string, string[]> = {
-  self: ["VAT threshold should be reviewed if turnover is close to or above £90,000.", "CIS deductions should be agreed to contractor statements."],
-  rental: ["Mortgage interest restriction may apply for residential property.", "Joint ownership and property percentage should be checked."],
+  self: [
+    "VAT threshold should be reviewed if turnover is close to or above £90,000.",
+    "CIS deductions should be agreed to contractor statements.",
+  ],
+  rental: [
+    "Mortgage interest restriction may apply for residential property.",
+    "Joint ownership and property percentage should be checked.",
+  ],
   dividends: ["Dividend tax depends on total income and tax band allocation."],
   capital: ["UK residential property disposals may require separate CGT reporting."],
   foreign: ["Foreign pages and double tax relief may be required."],
 };
 
+function getFirmFromUrl() {
+  if (typeof window === "undefined") return "hala";
+  const params = new URLSearchParams(window.location.search);
+  return params.get("firm") || "hala";
+}
+
 export default function SmartSAIntake() {
+  const firmKey = getFirmFromUrl();
+  const firm = firmConfig[firmKey] || firmConfig.hala;
+  const isUnknownFirm = !firmConfig[firmKey];
+
   const [answers, setAnswers] = useState<Answers>({});
   const [status, setStatus] = useState<Status>({});
   const [submitting, setSubmitting] = useState(false);
@@ -56,6 +107,12 @@ export default function SmartSAIntake() {
 
   const summary = `
 Smart SA Intake Summary
+
+Firm:
+${firm.name}
+
+Firm key:
+${firmKey}
 
 Detected profile:
 ${selectedProfile.length ? selectedProfile.map((x) => `- ${x}`).join("\n") : "- None selected"}
@@ -85,9 +142,11 @@ ${riskFlags.length ? riskFlags.map((x) => `- ${x}`).join("\n") : "- None"}
     setSubmitting(true);
 
     const formData = new FormData(event.currentTarget);
+    formData.append("firm_name", firm.name);
+    formData.append("firm_key", firmKey);
     formData.append("smart_intake_summary", summary);
 
-    await fetch("https://formspree.io/f/xbdwlgdv", {
+    await fetch(firm.formEndpoint, {
       method: "POST",
       body: formData,
       headers: { Accept: "application/json" },
@@ -98,11 +157,25 @@ ${riskFlags.length ? riskFlags.map((x) => `- ${x}`).join("\n") : "- None"}
 
   return (
     <div style={{ maxWidth: "950px", margin: "0 auto", padding: "40px 20px", fontFamily: "Arial, sans-serif", lineHeight: 1.6 }}>
-      <h1 style={{ textAlign: "center" }}>Smart Self Assessment Intake</h1>
+      <div style={{ textAlign: "center", marginBottom: "30px" }}>
+        <p style={{ color: "#2563eb", fontWeight: "bold" }}>{firm.name}</p>
 
-      <p style={{ textAlign: "center", color: "#64748b", maxWidth: "720px", margin: "10px auto 30px" }}>
-        Answer the screening questions. The system generates a tailored document checklist, identifies missing items and sends an accountant-ready summary.
-      </p>
+        <h1>Smart Self Assessment Intake</h1>
+
+        <p style={{ color: "#64748b", maxWidth: "720px", margin: "10px auto" }}>
+          Answer the screening questions. The system generates a tailored document checklist, identifies missing items and sends an accountant-ready summary.
+        </p>
+
+        <p style={{ fontSize: "14px", color: "#64748b" }}>
+          Firm link: <strong>{`/smart-sa-intake?firm=${firmKey}`}</strong>
+        </p>
+
+        {isUnknownFirm ? (
+          <div style={{ marginTop: "15px", padding: "14px", background: "#fee2e2", color: "#991b1b", borderRadius: "10px" }}>
+            Unknown firm code. This submission will be sent to the Hala Digital demo inbox.
+          </div>
+        ) : null}
+      </div>
 
       <form onSubmit={handleSubmit} style={{ display: "grid", gap: "20px" }}>
         <section style={cardStyle}>
@@ -164,7 +237,7 @@ ${riskFlags.length ? riskFlags.map((x) => `- ${x}`).join("\n") : "- None"}
           <h3>3. Document folder link</h3>
           <input name="document_link" placeholder="Paste Google Drive / Dropbox / OneDrive folder link" style={inputStyle} />
           <p style={{ fontSize: "13px", color: "#64748b" }}>
-            For the MVP, documents should be uploaded to a secure shared folder and the link pasted here.
+            For this MVP, documents should be uploaded to a secure shared folder and the link pasted here.
           </p>
         </section>
 
@@ -192,7 +265,7 @@ ${riskFlags.length ? riskFlags.map((x) => `- ${x}`).join("\n") : "- None"}
           <textarea name="notes" placeholder="Anything the accountant should know?" rows={4} style={inputStyle} />
         </section>
 
-        <input type="hidden" name="_subject" value="Smart SA Intake Submission" />
+        <input type="hidden" name="_subject" value={`Smart SA Intake Submission - ${firm.name}`} />
 
         <button
           type="submit"
