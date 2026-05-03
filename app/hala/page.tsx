@@ -1,3 +1,4 @@
+import SiteHeader from "../components/SiteHeader";
 export default function HalaPage() {
   const buttonStyle = {
     display: "inline-block",
@@ -10,6 +11,7 @@ export default function HalaPage() {
 
   return (
     <div style={{ fontFamily: "Arial, sans-serif", lineHeight: 1.6, color: "#0f172a" }}>
+      <SiteHeader />
       {/* HERO */}
       <section style={{ padding: "90px 20px", textAlign: "center", background: "linear-gradient(135deg, #0f172a, #1e3a8a)", color: "white" }}>
         <p style={{ fontWeight: "bold", color: "#93c5fd" }}>Hala Digital Ltd</p>
