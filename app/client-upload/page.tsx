@@ -54,7 +54,11 @@ export default function ClientUploadPage() {
         {/* File Upload */}
         <h3>Upload Documents</h3>
 
-        <input type="file" name="documents" multiple />
+        <input
+  name="document_link"
+  placeholder="Paste Google Drive / Dropbox link"
+  style={inputStyle}
+/>
 
         {/* Submit */}
         <button
