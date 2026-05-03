@@ -1,4 +1,3 @@
-import SiteHeader from "../components/SiteHeader";
 export default function HalaPage() {
   const buttonStyle = {
     display: "inline-block",
