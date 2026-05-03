@@ -1,22 +1,25 @@
-import SiteHeader from "./components/SiteHeader";
-import SiteFooter from "./components/SiteFooter";
-import type { Metadata } from "next";
-import "./globals.css";
+"use client";
 
-export const metadata: Metadata = {
-  title: "UK Tax Calculator 2025/26 | Hala Digital Ltd",
-  description:
-    "A UK tax calculator and tax tools platform for individuals, businesses and accountancy practices.",
-};
+import { usePathname } from "next/navigation";
 
-export default function RootLayout({
+export default function ClientChrome({
   children,
-}: Readonly<{
+  header,
+  footer,
+}: {
   children: React.ReactNode;
-}>) {
+  header: React.ReactNode;
+  footer: React.ReactNode;
+}) {
+  const pathname = usePathname();
+
+  const hideChrome = pathname === "/smart-sa-intake";
+
   return (
-    <html lang="en">
-      <body><SiteHeader />{children}<SiteFooter /></body>
-    </html>
+    <>
+      {!hideChrome && header}
+      {children}
+      {!hideChrome && footer}
+    </>
   );
 }
