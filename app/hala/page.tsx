@@ -15,11 +15,14 @@ export default function HalaPage() {
         <p style={{ fontWeight: "bold", color: "#93c5fd" }}>Hala Digital Ltd</p>
 
         <h1 style={{ fontSize: "46px", marginBottom: "20px" }}>
-          Websites, SEO & Smart Business Tools
+          Websites That Bring You Clients
         </h1>
+        <p style={{ marginTop: "10px", color: "#facc15", fontWeight: "bold" }}>
+Limited slots available this month
+</p>
 
         <p style={{ fontSize: "20px", maxWidth: "780px", margin: "0 auto", opacity: 0.92 }}>
-          We help UK small businesses build better websites, generate more leads and use smart tools to grow online.
+          We build high-converting websites for UK businesses that generate enquiries through Google, WhatsApp and contact forms.
         </p>
 
         <p style={{ marginTop: "14px", fontSize: "16px", opacity: 0.85 }}>
