@@ -248,6 +248,7 @@ Limited slots available this month
 
         <div style={{ marginTop: "20px", display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "12px" }}>
           <a href="/website-design-for-small-business-uk">Website Design Guide</a>
+          <a href="/small-business-website-cost-uk">Website Cost UK</a>
           <a href="/how-to-start-a-limited-company-uk">How to Start a Limited Company</a>
           <a href="/self-assessment-calculator">Self Assessment Calculator</a>
           <a href="/dividend-tax-calculator">Dividend Tax Calculator</a>
