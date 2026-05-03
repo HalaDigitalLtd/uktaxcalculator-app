@@ -27,9 +27,14 @@ export default function HalaPage() {
         </p>
 
         <div style={{ marginTop: "30px", display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "10px" }}>
-          <a href="/website-design-for-small-business-uk" style={{ ...buttonStyle, background: "#f59e0b", color: "white" }}>
-            Website Design
-          </a>
+          <a
+  href="https://haladigital.co.uk/website-design-for-small-business-uk"
+  target="_blank"
+  rel="noopener noreferrer"
+  style={{ ...buttonStyle, background: "#f59e0b", color: "white" }}
+>
+  Website Design
+</a>
 
           <a href="/quote" style={{ ...buttonStyle, background: "#f59e0b", color: "white" }}>
             Get Instant Website Quote
@@ -87,9 +92,14 @@ export default function HalaPage() {
           </div>
 
           <div style={{ marginTop: "30px" }}>
-            <a href="/website-design-for-small-business-uk" style={{ ...buttonStyle, background: "#f59e0b", color: "white" }}>
-              Website Design for Small Businesses
-            </a>
+            <a
+  href="https://haladigital.co.uk/website-design-for-small-business-uk"
+  target="_blank"
+  rel="noopener noreferrer"
+  style={{ ...buttonStyle, background: "#f59e0b", color: "white" }}
+>
+  Website Design for Small Businesses
+</a>
 
             <a href="/company-formation" style={{ ...buttonStyle, background: "#0f172a", color: "white" }}>
               Start a UK Limited Company →
