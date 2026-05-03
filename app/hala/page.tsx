@@ -121,8 +121,6 @@ export default function HalaPage() {
 >
   Start a UK Limited Company →
 </a>
-  href="/company-formation"
-  style={buttonStyle}
 >
   Start a UK Limited Company →
 </a>
