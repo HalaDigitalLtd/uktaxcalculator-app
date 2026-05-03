@@ -198,6 +198,9 @@ Limited slots available this month
         <a href="/vat-sic" style={{ ...buttonStyle, background: "#0f172a", color: "white" }}>
           VAT SIC Tool
         </a>
+        <a href="/client-onboarding-tool-for-accountants" style={{ ...buttonStyle, background: "#9333ea", color: "white" }}>
+  Client Onboarding Tool
+</a>
       </section>
 
       {/* TRUST */}
