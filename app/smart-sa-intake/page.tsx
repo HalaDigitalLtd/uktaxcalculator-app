@@ -29,8 +29,8 @@ const firmSlots: Record<string, FirmConfig> = Object.fromEntries(
 );
 
 const firmConfig: Record<string, FirmConfig> = {
-  hala: {
-    name: "Hala Digital Demo",
+  default: {
+    name: "Your Accountant",
     formEndpoint: DEFAULT_FORM_ENDPOINT,
     brandColor: "#2563eb",
   },
@@ -175,7 +175,7 @@ const riskMap: Record<string, string[]> = {
 function getFirmFromUrl() {
   if (typeof window === "undefined") return "hala";
   const params = new URLSearchParams(window.location.search);
-  return params.get("firm") || "hala";
+  return params.get("firm") || "default";
 }
 
 export default function SmartSAIntake() {
@@ -282,7 +282,7 @@ Risk flags are internal prompts for the accountant only and should not be treate
 
         {isUnknownFirm && (
           <div style={warningStyle}>
-            Unknown firm code. This submission will be sent to the Hala Digital demo inbox.
+            This is a generic intake link. Please confirm with your accountant if required.
           </div>
         )}
       </div>
