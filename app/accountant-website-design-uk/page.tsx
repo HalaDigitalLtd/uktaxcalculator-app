@@ -32,6 +32,13 @@ export default function AccountantWebsitePage() {
       <a href="https://wa.me/447884063169">
         Message on WhatsApp
       </a>
+      <div style={{ marginTop: "40px" }}>
+  <h3>Related pages</h3>
+  <ul>
+    <li><a href="/website-design-for-small-business-uk">Website Design for Small Businesses</a></li>
+    <li><a href="/small-business-website-cost-uk">Website Cost UK</a></li>
+  </ul>
+</div>
 
     </div>
   );
