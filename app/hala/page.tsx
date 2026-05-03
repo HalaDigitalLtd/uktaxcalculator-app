@@ -201,6 +201,9 @@ Limited slots available this month
         <a href="/client-onboarding-tool-for-accountants" style={{ ...buttonStyle, background: "#9333ea", color: "white" }}>
   Client Onboarding Tool
 </a>
+        <a href="/smart-sa-intake" style={{ ...buttonStyle, background: "#16a34a", color: "white" }}>
+  Smart SA Intake Demo
+</a>
       </section>
 
       {/* TRUST */}
