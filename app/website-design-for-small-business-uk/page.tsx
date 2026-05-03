@@ -175,6 +175,13 @@ export default function WebsiteDesignPage() {
             Yes. Hala Digital can build lead-generating tools such as quote calculators, tax calculators and industry-specific checkers.
           </p>
         </section>
+        <div style={{ marginTop: "40px" }}>
+  <h3>Related guides</h3>
+  <ul>
+    <li><a href="/small-business-website-cost-uk">Small Business Website Cost UK</a></li>
+    <li><a href="/accountant-website-design-uk">Website Design for Accountants</a></li>
+  </ul>
+</div>
 
         <div style={{ marginTop: "35px", padding: "24px", background: "#f8fafc", borderRadius: "14px" }}>
           <h3>Related services and tools</h3>
