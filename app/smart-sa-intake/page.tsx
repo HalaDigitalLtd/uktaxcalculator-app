@@ -4,141 +4,118 @@ import { useState } from "react";
 
 export default function SmartSAIntake() {
   const [answers, setAnswers] = useState<any>({});
+  const [status, setStatus] = useState<any>({});
 
-  const handleChange = (key: string, value: any) => {
+  const handleAnswer = (key: string, value: boolean) => {
     setAnswers({ ...answers, [key]: value });
   };
 
-  const inputStyle = {
-    padding: "10px",
-    borderRadius: "6px",
-    border: "1px solid #ccc",
-    marginTop: "5px",
-    width: "100%"
+  const handleStatus = (doc: string, value: string) => {
+    setStatus({ ...status, [doc]: value });
   };
 
+  const checklist: any = [];
+
+  if (answers.employment) {
+    checklist.push("P60 / P45", "P11D");
+  }
+
+  if (answers.self) {
+    checklist.push(
+      "Bank statements",
+      "Sales summary",
+      "Expense receipts",
+      "CIS statements"
+    );
+  }
+
+  if (answers.rental) {
+    checklist.push(
+      "Rental income summary",
+      "Agent statement",
+      "Mortgage interest statement"
+    );
+  }
+
+  if (answers.dividends) {
+    checklist.push("Dividend vouchers");
+  }
+
+  if (answers.capital) {
+    checklist.push("Purchase & sale details");
+  }
+
+  const missing = checklist.filter((doc: string) => status[doc] === "missing");
+
   return (
-    <div style={{ maxWidth: "850px", margin: "0 auto", padding: "40px 20px", fontFamily: "Arial" }}>
+    <div style={{ maxWidth: "900px", margin: "0 auto", padding: "40px", fontFamily: "Arial" }}>
 
-      <h1 style={{ textAlign: "center" }}>Smart Self Assessment Intake</h1>
+      <h1 style={{ textAlign: "center" }}>Smart SA Intake Tool</h1>
 
-      <p style={{ textAlign: "center", color: "#666" }}>
-        Answer a few questions. We’ll generate your exact document checklist.
-      </p>
-
-      {/* BASIC */}
-      <h3>Basic Details</h3>
-      <input name="name" placeholder="Full Name" style={inputStyle} />
-      <input name="email" placeholder="Email" style={inputStyle} />
-
-      {/* SCREENING */}
-      <h3 style={{ marginTop: "25px" }}>Income Types</h3>
+      <h3>Income Types</h3>
 
       {[
-        ["employment", "Employment Income"],
-        ["self", "Self Employed / CIS"],
-        ["rental", "Rental Income"],
+        ["employment", "Employment"],
+        ["self", "Self Employed"],
+        ["rental", "Rental"],
         ["dividends", "Dividends"],
-        ["capital", "Capital Gains"],
-        ["foreign", "Foreign Income"]
+        ["capital", "Capital Gains"]
       ].map(([key, label]) => (
-        <label key={key} style={{ display: "block", marginTop: "10px" }}>
-          <input
-            type="checkbox"
-            onChange={(e) => handleChange(key, e.target.checked)}
-          />{" "}
+        <label key={key} style={{ display: "block" }}>
+          <input type="checkbox" onChange={(e) => handleAnswer(key, e.target.checked)} />
           {label}
         </label>
       ))}
 
-      {/* DYNAMIC CHECKLIST */}
-      <div style={{ marginTop: "30px", background: "#f8fafc", padding: "20px", borderRadius: "10px" }}>
-        <h3>Your Required Documents</h3>
+      {/* CHECKLIST */}
+      <div style={{ marginTop: "30px" }}>
+        <h3>Required Documents</h3>
 
-        <ul>
+        {checklist.map((doc: string) => (
+          <div key={doc} style={{ marginBottom: "10px" }}>
+            <strong>{doc}</strong>
 
-          {answers.employment && (
-            <>
-              <li>P60 / P45</li>
-              <li>P11D (if benefits)</li>
-            </>
-          )}
-
-          {answers.self && (
-            <>
-              <li>Bank statements (full year)</li>
-              <li>Sales / income summary</li>
-              <li>Expense receipts</li>
-              <li>CIS deduction statements</li>
-            </>
-          )}
-
-          {answers.rental && (
-            <>
-              <li>Rental income summary</li>
-              <li>Letting agent statement</li>
-              <li>Mortgage interest statement</li>
-              <li>Repair & maintenance costs</li>
-            </>
-          )}
-
-          {answers.dividends && (
-            <>
-              <li>Dividend vouchers</li>
-            </>
-          )}
-
-          {answers.capital && (
-            <>
-              <li>Purchase & sale details</li>
-              <li>Legal fees</li>
-            </>
-          )}
-
-          {answers.foreign && (
-            <>
-              <li>Foreign income details</li>
-              <li>Tax paid abroad</li>
-            </>
-          )}
-
-        </ul>
+            <select
+              onChange={(e) => handleStatus(doc, e.target.value)}
+              style={{ marginLeft: "10px" }}
+            >
+              <option value="">Select</option>
+              <option value="uploaded">Uploaded</option>
+              <option value="missing">Missing</option>
+              <option value="na">Not Applicable</option>
+            </select>
+          </div>
+        ))}
       </div>
 
-      {/* DOCUMENT LINK */}
-      <h3 style={{ marginTop: "25px" }}>Upload Documents</h3>
+      {/* MISSING */}
+      <div style={{ marginTop: "30px", background: "#fee2e2", padding: "15px", borderRadius: "10px" }}>
+        <h3>Missing Items</h3>
 
-      <input
-        placeholder="Paste Google Drive / Dropbox link"
-        style={inputStyle}
-      />
+        {missing.length === 0 ? (
+          <p>Nothing missing 🎉</p>
+        ) : (
+          <ul>
+            {missing.map((item: string) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        )}
+      </div>
 
-      {/* NOTES */}
-      <textarea
-        placeholder="Any additional notes"
-        rows={4}
-        style={{ ...inputStyle, marginTop: "10px" }}
-      />
+      {/* SUMMARY */}
+      <div style={{ marginTop: "30px", background: "#eef6ff", padding: "15px", borderRadius: "10px" }}>
+        <h3>Accountant Summary</h3>
 
-      {/* SUBMIT */}
-      <button
-        style={{
-          marginTop: "20px",
-          padding: "12px",
-          background: "#25D366",
-          color: "white",
-          border: "none",
-          borderRadius: "8px",
-          fontWeight: "bold"
-        }}
-      >
-        Submit Information
-      </button>
+        <p>
+          Profile:{" "}
+          {Object.keys(answers)
+            .filter((k) => answers[k])
+            .join(", ")}
+        </p>
 
-      {/* USP */}
-      <p style={{ marginTop: "20px", fontSize: "13px", color: "#666" }}>
-        This intelligent system ensures your accountant receives exactly what is needed, reducing delays and follow-ups.
-      </p>
+        <p>Missing: {missing.join(", ") || "None"}</p>
+      </div>
 
     </div>
   );
