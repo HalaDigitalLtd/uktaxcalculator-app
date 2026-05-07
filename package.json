@@ -1,0 +1,31 @@
+{
+  "name": "uktaxcalculator-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.3",
+    "@tailwindcss/postcss": "^4.2.4",
+    "next": "latest",
+    "papaparse": "^5.5.3",
+    "postcss": "^8.5.14",
+    "react": "latest",
+    "react-dom": "latest",
+    "tailwindcss": "^4.2.4",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "eslint": "latest",
+    "eslint-config-next": "latest",
+    "typescript": "latest"
+  }
+}
