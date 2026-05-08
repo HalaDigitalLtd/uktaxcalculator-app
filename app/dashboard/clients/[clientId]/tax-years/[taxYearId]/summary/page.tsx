@@ -11,19 +11,49 @@ const ACTIVE_AMENDMENT_STATUSES = [
   "draft",
   "in_progress",
   "in_review",
+  "submitted_for_review",
   "approved",
   "locked",
   "ready_to_submit",
+  "unlocked",
 ];
 
 function normalise(value: any) {
   return String(value || "").toLowerCase().trim();
 }
 
+function toMoney(value: any) {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+  }).format(Number(value || 0));
+}
+
+function amount(row: Row | null, keys: string[]) {
+  if (!row) return 0;
+
+  for (const key of keys) {
+    if (row?.[key] !== undefined && row?.[key] !== null) {
+      return Number(row[key]);
+    }
+  }
+
+  return 0;
+}
+
+function formatDate(value: any) {
+  if (!value) return "-";
+  try {
+    return new Date(value).toLocaleString("en-GB");
+  } catch {
+    return "-";
+  }
+}
+
 export default function TaxYearSummaryPage() {
   const params = useParams();
-  const clientId = params.clientId as string;
-  const taxYearId = params.taxYearId as string;
+  const clientId = String(params.clientId || "");
+  const taxYearId = String(params.taxYearId || "");
 
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
@@ -32,27 +62,16 @@ export default function TaxYearSummaryPage() {
   const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
   const [amendments, setAmendments] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const [creatingAmendment, setCreatingAmendment] = useState(false);
   const [message, setMessage] = useState("");
-
-  const money = (value: any) =>
-    new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency: "GBP",
-    }).format(Number(value || 0));
-
-  const amount = (row: Row, keys: string[]) => {
-    for (const key of keys) {
-      if (row?.[key] !== undefined && row?.[key] !== null) {
-        return Number(row[key]);
-      }
-    }
-    return 0;
-  };
+  const [newAmendmentReason, setNewAmendmentReason] = useState("");
 
   const clientName = useMemo(() => {
     if (!client) return "Client";
     return (
       `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
+      client.name ||
+      client.client_name ||
       client.email ||
       "Client"
     );
@@ -209,6 +228,8 @@ export default function TaxYearSummaryPage() {
 
   const submitted = Boolean(
     workflow?.submitted ||
+      workflow?.submitted_at ||
+      workflow?.hmrc_submission_id ||
       workflow?.status === "submitted" ||
       latestSubmissionLog?.status === "submitted"
   );
@@ -247,14 +268,133 @@ export default function TaxYearSummaryPage() {
     );
   }, [amendments]);
 
-  const originalSnapshotIncome = activeAmendment?.annual_income_snapshot;
-  const originalSnapshotExpenses = activeAmendment?.annual_expenses_snapshot;
-  const originalSnapshotProfit = activeAmendment?.annual_profit_snapshot;
+  const latestAmendmentNumber = useMemo(() => {
+    return amendments.reduce((max, row) => {
+      const current = Number(row.amendment_number || 0);
+      return current > max ? current : max;
+    }, 0);
+  }, [amendments]);
 
-  const hasSnapshot =
-    originalSnapshotIncome !== undefined ||
-    originalSnapshotExpenses !== undefined ||
-    originalSnapshotProfit !== undefined;
+  const activeAmendmentUrl = activeAmendment
+    ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/amendments/${activeAmendment.id}`
+    : "";
+
+  async function createAmendment() {
+    setMessage("");
+
+    if (!taxYearIsImmutable || !submitted) {
+      setMessage(
+        "A final declaration must be submitted and locked before creating an amendment."
+      );
+      return;
+    }
+
+    if (activeAmendment) {
+      setMessage(
+        "An active amendment already exists. Continue the existing amendment before creating another."
+      );
+      return;
+    }
+
+    if (!newAmendmentReason.trim()) {
+      setMessage("Enter a reason before creating a new amendment.");
+      return;
+    }
+
+    if (!hmrcSubmissionId) {
+      setMessage(
+        "Original HMRC submission ID is missing. Create amendment is blocked to preserve safe amendment lineage."
+      );
+      return;
+    }
+
+    setCreatingAmendment(true);
+
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+
+      const nextNumber = latestAmendmentNumber + 1;
+
+      const insertPayload: Row = {
+        firm_id: client?.firm_id || taxYear?.firm_id || null,
+        client_id: clientId,
+        tax_year_id: taxYearId,
+        amendment_number: nextNumber,
+        status: "draft",
+        reason: newAmendmentReason.trim(),
+
+        annual_income_snapshot: totals.income,
+        annual_expenses_snapshot: totals.expenses,
+        annual_profit_snapshot: totals.profit,
+
+        locked_original_income: totals.income,
+        locked_original_expenses: totals.expenses,
+        locked_original_profit: totals.profit,
+
+        original_hmrc_submission_id: hmrcSubmissionId,
+        original_hmrc_correlation_id: hmrcCorrelationId,
+        original_submitted_at: hmrcSubmittedAt,
+
+        created_by: userData.user?.id || null,
+        created_by_email: userData.user?.email || null,
+
+        meta: {
+          source: "tax_year_control_centre",
+          amendment_lineage: {
+            original_final_declaration_id: workflow?.id || null,
+            original_hmrc_submission_id: hmrcSubmissionId,
+            original_hmrc_correlation_id: hmrcCorrelationId,
+            original_submitted_at: hmrcSubmittedAt,
+          },
+          original_snapshot: {
+            income: totals.income,
+            expenses: totals.expenses,
+            profit: totals.profit,
+          },
+          compliance_note:
+            "Original final declaration remains preserved. Amendment must be processed through separate adjustment ledger and locked submission snapshot.",
+        },
+      };
+
+      const { data: created, error } = await supabase
+        .from("tax_year_amendments")
+        .insert(insertPayload)
+        .select("*")
+        .single();
+
+      if (error) throw error;
+
+      await supabase.from("hmrc_submission_logs").insert({
+        firm_id: client?.firm_id || taxYear?.firm_id || null,
+        client_id: clientId,
+        tax_year_id: taxYearId,
+        amendment_id: created.id,
+        submission_type: "final_declaration_amendment",
+        workflow_action: "create_amendment",
+        action: "create_amendment",
+        status: "created",
+        message: "New amendment workflow created from Tax Year Control Centre.",
+        created_by: userData.user?.id || null,
+        meta: {
+          amendment_id: created.id,
+          amendment_number: nextNumber,
+          reason: newAmendmentReason.trim(),
+          original_hmrc_submission_id: hmrcSubmissionId,
+          original_hmrc_correlation_id: hmrcCorrelationId,
+          original_snapshot: {
+            income: totals.income,
+            expenses: totals.expenses,
+            profit: totals.profit,
+          },
+        },
+      } as any);
+
+      window.location.href = `/dashboard/clients/${clientId}/tax-years/${taxYearId}/amendments/${created.id}`;
+    } catch (e: any) {
+      setMessage(e.message || "Failed to create amendment.");
+      setCreatingAmendment(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -276,7 +416,7 @@ export default function TaxYearSummaryPage() {
 
           <p style={styles.subtitle}>
             Client: <strong>{clientName}</strong> · Tax year:{" "}
-            <strong>{taxYear?.year_label || "Unknown"}</strong>
+            <strong>{taxYear?.year_label || taxYear?.label || "Unknown"}</strong>
           </p>
 
           <p style={styles.subtitle}>
@@ -296,8 +436,16 @@ export default function TaxYearSummaryPage() {
             href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/final-declaration`}
             style={taxYearIsImmutable ? styles.lockedButton : styles.primaryButton}
           >
-            {taxYearIsImmutable ? "View Locked Declaration" : "Open Final Declaration"}
+            {taxYearIsImmutable
+              ? "View Locked Declaration"
+              : "Open Final Declaration"}
           </Link>
+
+          {activeAmendment && (
+            <Link href={activeAmendmentUrl} style={styles.successButton}>
+              Continue Active Amendment
+            </Link>
+          )}
         </div>
       </div>
 
@@ -308,8 +456,8 @@ export default function TaxYearSummaryPage() {
           <h2 style={styles.lockTitle}>Final Declaration submitted</h2>
           <p style={styles.lockText}>
             This tax year is locked. Original HMRC evidence, submission ID,
-            correlation ID and audit records must be preserved permanently.
-            Any changes must be handled through a separate amendment workflow.
+            correlation ID and audit records must be preserved permanently. Any
+            correction must be handled through a separate amendment workflow.
           </p>
           <p style={styles.lockMeta}>
             Normal quarter editing is blocked from this summary page to prevent
@@ -321,20 +469,16 @@ export default function TaxYearSummaryPage() {
       {activeAmendment && (
         <section style={styles.amendmentBanner}>
           <h2 style={styles.amendmentTitle}>
-            Active amendment draft #{activeAmendment.amendment_number || "-"}
+            Active amendment #{activeAmendment.amendment_number || "-"}
           </h2>
           <p style={styles.amendmentText}>
-            A post-submission amendment is currently open. The original Final
-            Declaration remains locked and preserved. Any correction should be
-            continued through the amendment workflow, not by editing original
-            quarter records.
+            A post-submission amendment is currently open. Continue this
+            amendment before creating another. The original Final Declaration
+            remains locked and preserved.
           </p>
           <div style={styles.amendmentActions}>
-            <Link
-              href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/final-declaration`}
-              style={styles.amendmentButton}
-            >
-              Continue amendment workflow
+            <Link href={activeAmendmentUrl} style={styles.amendmentButton}>
+              Open amendment working paper
             </Link>
           </div>
         </section>
@@ -343,17 +487,17 @@ export default function TaxYearSummaryPage() {
       <section style={styles.statsGrid}>
         <div style={styles.statCard}>
           <span style={styles.statLabel}>Annual income</span>
-          <strong style={styles.statValue}>{money(totals.income)}</strong>
+          <strong style={styles.statValue}>{toMoney(totals.income)}</strong>
         </div>
 
         <div style={styles.statCard}>
           <span style={styles.statLabel}>Annual expenses</span>
-          <strong style={styles.statValue}>{money(totals.expenses)}</strong>
+          <strong style={styles.statValue}>{toMoney(totals.expenses)}</strong>
         </div>
 
         <div style={styles.statCard}>
           <span style={styles.statLabel}>Annual profit</span>
-          <strong style={styles.statValue}>{money(totals.profit)}</strong>
+          <strong style={styles.statValue}>{toMoney(totals.profit)}</strong>
         </div>
 
         <div style={styles.statCard}>
@@ -417,11 +561,7 @@ export default function TaxYearSummaryPage() {
 
             <div>
               <span style={styles.miniLabel}>HMRC submitted at</span>
-              <strong>
-                {hmrcSubmittedAt
-                  ? new Date(hmrcSubmittedAt).toLocaleString()
-                  : "Not available"}
-              </strong>
+              <strong>{formatDate(hmrcSubmittedAt)}</strong>
             </div>
           </div>
         </div>
@@ -461,7 +601,7 @@ export default function TaxYearSummaryPage() {
             </div>
 
             <div style={styles.checkRow}>
-              <span>Active amendment draft</span>
+              <span>Active amendment</span>
               <strong>{activeAmendment ? "Yes" : "No"}</strong>
             </div>
           </div>
@@ -470,7 +610,21 @@ export default function TaxYearSummaryPage() {
 
       {taxYearIsImmutable && (
         <section style={styles.card}>
-          <h2 style={styles.sectionTitle}>Amendment Control</h2>
+          <div style={styles.sectionHeaderRow}>
+            <div>
+              <h2 style={styles.sectionTitle}>Amendment Command Centre</h2>
+              <p style={styles.muted}>
+                Create, continue and evidence all post-submission amendments
+                from here. The original declaration is never overwritten.
+              </p>
+            </div>
+
+            {activeAmendment && (
+              <Link href={activeAmendmentUrl} style={styles.successButton}>
+                Continue amendment
+              </Link>
+            )}
+          </div>
 
           <div style={styles.amendmentGrid}>
             <div style={styles.amendmentInfoBox}>
@@ -493,31 +647,38 @@ export default function TaxYearSummaryPage() {
             </div>
           </div>
 
-          {hasSnapshot && (
-            <div style={styles.snapshotBox}>
-              <h3 style={styles.snapshotTitle}>Original snapshot at amendment start</h3>
-              <div style={styles.snapshotGrid}>
-                <div>
-                  <span style={styles.miniLabel}>Original income</span>
-                  <strong>{money(originalSnapshotIncome)}</strong>
-                </div>
-                <div>
-                  <span style={styles.miniLabel}>Original expenses</span>
-                  <strong>{money(originalSnapshotExpenses)}</strong>
-                </div>
-                <div>
-                  <span style={styles.miniLabel}>Original profit</span>
-                  <strong>{money(originalSnapshotProfit)}</strong>
-                </div>
-              </div>
+          {!activeAmendment && (
+            <div style={styles.createAmendmentBox}>
+              <h3 style={styles.createTitle}>Create new amendment</h3>
+              <p style={styles.muted}>
+                This creates a separate amendment workflow with original HMRC
+                submission lineage and frozen original totals. Adjustments will
+                be entered in the amendment working paper ledger.
+              </p>
+
+              <label style={styles.label}>
+                Amendment reason
+                <textarea
+                  value={newAmendmentReason}
+                  onChange={(e) => setNewAmendmentReason(e.target.value)}
+                  placeholder="Explain why this amendment is required. Example: late expense invoice identified after final declaration submission."
+                  style={styles.textarea}
+                  disabled={creatingAmendment}
+                />
+              </label>
+
+              <button
+                onClick={createAmendment}
+                disabled={creatingAmendment}
+                style={styles.primaryButton}
+              >
+                {creatingAmendment ? "Creating amendment..." : "Create New Amendment"}
+              </button>
             </div>
           )}
 
           {amendments.length === 0 ? (
-            <p style={styles.muted}>
-              No amendments created yet. Start one from the locked Final
-              Declaration page.
-            </p>
+            <p style={styles.muted}>No amendments created yet.</p>
           ) : (
             <div style={styles.tableWrap}>
               <table style={styles.table}>
@@ -528,6 +689,7 @@ export default function TaxYearSummaryPage() {
                     <th style={styles.th}>Created</th>
                     <th style={styles.th}>Original submission</th>
                     <th style={styles.th}>Amendment submission</th>
+                    <th style={styles.th}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -539,11 +701,7 @@ export default function TaxYearSummaryPage() {
                       <td style={styles.td}>
                         <span style={styles.badge}>{a.status || "draft"}</span>
                       </td>
-                      <td style={styles.td}>
-                        {a.created_at
-                          ? new Date(a.created_at).toLocaleString()
-                          : "-"}
-                      </td>
+                      <td style={styles.td}>{formatDate(a.created_at)}</td>
                       <td style={styles.td}>
                         <span style={styles.monospace}>
                           {a.original_hmrc_submission_id || hmrcSubmissionId || "-"}
@@ -553,6 +711,14 @@ export default function TaxYearSummaryPage() {
                         <span style={styles.monospace}>
                           {a.hmrc_submission_id || "Not submitted"}
                         </span>
+                      </td>
+                      <td style={styles.td}>
+                        <Link
+                          href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/amendments/${a.id}`}
+                          style={styles.smallButton}
+                        >
+                          Open
+                        </Link>
                       </td>
                     </tr>
                   ))}
@@ -617,10 +783,10 @@ export default function TaxYearSummaryPage() {
                         </span>
                       </td>
 
-                      <td style={styles.td}>{money(income)}</td>
-                      <td style={styles.td}>{money(expenses)}</td>
+                      <td style={styles.td}>{toMoney(income)}</td>
+                      <td style={styles.td}>{toMoney(expenses)}</td>
                       <td style={styles.td}>
-                        <strong>{money(income - expenses)}</strong>
+                        <strong>{toMoney(income - expenses)}</strong>
                       </td>
 
                       <td style={styles.td}>
@@ -659,12 +825,7 @@ export default function TaxYearSummaryPage() {
               <div key={log.id} style={styles.historyCard}>
                 <div>
                   <strong>{log.status || "Unknown status"}</strong>
-                  <p style={styles.muted}>
-                    Created:{" "}
-                    {log.created_at
-                      ? new Date(log.created_at).toLocaleString()
-                      : "Not available"}
-                  </p>
+                  <p style={styles.muted}>Created: {formatDate(log.created_at)}</p>
                 </div>
 
                 <div style={styles.historyMeta}>
@@ -726,6 +887,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     gap: "12px",
     flexWrap: "wrap",
+    justifyContent: "flex-end",
   },
   primaryButton: {
     display: "inline-flex",
@@ -733,6 +895,19 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "center",
     border: "none",
     background: "#111827",
+    color: "white",
+    padding: "12px 18px",
+    borderRadius: "12px",
+    fontWeight: 800,
+    textDecoration: "none",
+    cursor: "pointer",
+  },
+  successButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "none",
+    background: "#16a34a",
     color: "white",
     padding: "12px 18px",
     borderRadius: "12px",
@@ -879,6 +1054,13 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: "0 10px 25px rgba(15, 23, 42, 0.06)",
     marginBottom: "20px",
   },
+  sectionHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "16px",
+    alignItems: "flex-start",
+    marginBottom: "18px",
+  },
   sectionTitle: {
     margin: "0 0 18px",
     fontSize: "22px",
@@ -888,6 +1070,7 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     color: "#64748b",
     fontSize: "14px",
+    lineHeight: 1.55,
   },
   statusBox: {
     background: "#f8fafc",
@@ -949,22 +1132,35 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "16px",
     padding: "16px",
   },
-  snapshotBox: {
+  createAmendmentBox: {
     background: "#f8fafc",
     border: "1px solid #e5e7eb",
     borderRadius: "16px",
-    padding: "16px",
+    padding: "18px",
     marginBottom: "18px",
   },
-  snapshotTitle: {
-    margin: "0 0 12px",
-    fontSize: "16px",
+  createTitle: {
+    margin: "0 0 8px",
+    fontSize: "18px",
     fontWeight: 900,
   },
-  snapshotGrid: {
+  label: {
     display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-    gap: "12px",
+    gap: "8px",
+    marginTop: "14px",
+    marginBottom: "14px",
+    color: "#334155",
+    fontSize: "13px",
+    fontWeight: 800,
+  },
+  textarea: {
+    minHeight: "100px",
+    border: "1px solid #cbd5e1",
+    borderRadius: "12px",
+    padding: "12px",
+    fontSize: "14px",
+    resize: "vertical",
+    fontFamily: "inherit",
   },
   tableWrap: {
     overflowX: "auto",
