@@ -102,6 +102,9 @@ export default function FinalDeclarationPage() {
     return 0;
   };
 
+  const amendmentHref = (amendmentId: string) =>
+    `/dashboard/clients/${clientId}/tax-years/${taxYearId}/amendments/${amendmentId}`;
+
   const clientName = useMemo(() => {
     if (!client) return "Client";
     return (
@@ -482,9 +485,8 @@ export default function FinalDeclarationPage() {
     const nextNumber =
       amendments.length === 0
         ? 1
-        : Math.max(
-            ...amendments.map((a) => Number(a.amendment_number || 0))
-          ) + 1;
+        : Math.max(...amendments.map((a) => Number(a.amendment_number || 0))) +
+          1;
 
     const amendmentPayload = {
       firm_id: client.firm_id || null,
@@ -500,7 +502,8 @@ export default function FinalDeclarationPage() {
       original_hmrc_submission_id: workflow.hmrcSubmissionId || null,
       original_hmrc_correlation_id: workflow.hmrcCorrelationId || null,
       original_hmrc_calculation_id: workflow.hmrcCalculationId || null,
-      original_submitted_at: workflow.hmrcSubmittedAt || workflow.submittedAt || null,
+      original_submitted_at:
+        workflow.hmrcSubmittedAt || workflow.submittedAt || null,
       annual_income_snapshot: totals.income,
       annual_expenses_snapshot: totals.expenses,
       annual_profit_snapshot: totals.profit,
@@ -855,21 +858,23 @@ export default function FinalDeclarationPage() {
             {workflow.submitted ? "Locked" : "Initialise / Refresh"}
           </button>
 
-          {workflow.submitted && (
-            <button
-              onClick={startAmendmentDraft}
-              disabled={actionLoading || Boolean(activeAmendmentDraft)}
-              style={
-                activeAmendmentDraft
-                  ? styles.disabledButton
-                  : styles.amendmentButton
-              }
-            >
-              {activeAmendmentDraft
-                ? "Active Amendment Exists"
-                : "Start Amendment Draft"}
-            </button>
-          )}
+          {workflow.submitted &&
+            (activeAmendmentDraft ? (
+              <Link
+                href={amendmentHref(activeAmendmentDraft.id)}
+                style={styles.amendmentLink}
+              >
+                Continue Amendment #{activeAmendmentDraft.amendment_number || "-"}
+              </Link>
+            ) : (
+              <button
+                onClick={startAmendmentDraft}
+                disabled={actionLoading}
+                style={styles.amendmentButton}
+              >
+                Start Amendment Draft
+              </button>
+            ))}
         </div>
       </div>
 
@@ -1022,20 +1027,23 @@ export default function FinalDeclarationPage() {
           </div>
 
           <div style={styles.viewerQuickActions}>
-            <button
-              type="button"
-              onClick={startAmendmentDraft}
-              disabled={actionLoading || Boolean(activeAmendmentDraft)}
-              style={
-                activeAmendmentDraft
-                  ? styles.disabledButton
-                  : styles.amendmentButton
-              }
-            >
-              {activeAmendmentDraft
-                ? "Active Amendment Draft Already Exists"
-                : "Start Amendment Draft"}
-            </button>
+            {activeAmendmentDraft ? (
+              <Link
+                href={amendmentHref(activeAmendmentDraft.id)}
+                style={styles.amendmentLink}
+              >
+                Open Active Amendment #{activeAmendmentDraft.amendment_number || "-"}
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={startAmendmentDraft}
+                disabled={actionLoading}
+                style={styles.amendmentButton}
+              >
+                Start Amendment Draft
+              </button>
+            )}
           </div>
 
           {amendments.length === 0 ? (
@@ -1051,6 +1059,7 @@ export default function FinalDeclarationPage() {
                     <th style={styles.th}>Created</th>
                     <th style={styles.th}>Original HMRC Submission</th>
                     <th style={styles.th}>Amendment HMRC Submission</th>
+                    <th style={styles.th}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1077,6 +1086,11 @@ export default function FinalDeclarationPage() {
                         <span style={styles.monospace}>
                           {a.hmrc_submission_id || "Not submitted"}
                         </span>
+                      </td>
+                      <td style={styles.td}>
+                        <Link href={amendmentHref(a.id)} style={styles.smallLink}>
+                          Open
+                        </Link>
                       </td>
                     </tr>
                   ))}
@@ -1493,6 +1507,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     cursor: "pointer",
   },
+  amendmentLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "none",
+    background: "#0f766e",
+    color: "white",
+    padding: "12px 18px",
+    borderRadius: "12px",
+    fontWeight: 900,
+    textDecoration: "none",
+  },
   smallButton: {
     border: "1px solid #cbd5e1",
     background: "white",
@@ -1501,6 +1527,18 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "10px",
     fontWeight: 800,
     cursor: "pointer",
+    fontSize: "12px",
+  },
+  smallLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#2563eb",
+    color: "white",
+    textDecoration: "none",
+    padding: "7px 10px",
+    borderRadius: "10px",
+    fontWeight: 800,
     fontSize: "12px",
   },
   retryButton: {
