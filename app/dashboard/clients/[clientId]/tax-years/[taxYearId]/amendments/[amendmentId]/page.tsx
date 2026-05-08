@@ -7,6 +7,8 @@ import { supabase } from "../../../../../../../../lib/supabaseClient";
 
 type Row = Record<string, any>;
 
+type ViewerMode = "request" | "response" | "headers" | null;
+
 const SUBMITTED_STATUSES = ["submitted", "accepted", "hmrc_submitted"];
 const LOCKED_STATUSES = ["locked", ...SUBMITTED_STATUSES];
 
@@ -17,7 +19,9 @@ function normalise(value: any) {
 function formatDate(value: any) {
   if (!value) return "-";
   try {
-    return new Date(value).toLocaleString();
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "-";
+    return date.toLocaleString("en-GB");
   } catch {
     return "-";
   }
@@ -32,8 +36,26 @@ function formatJson(value: any) {
   }
 }
 
+function getAmount(row: Row, keys: string[]) {
+  for (const key of keys) {
+    if (row?.[key] !== undefined && row?.[key] !== null) {
+      const value = Number(row[key]);
+      return Number.isFinite(value) ? value : 0;
+    }
+  }
+  return 0;
+}
+
+function money(value: any) {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+  }).format(Number(value || 0));
+}
+
 export default function AmendmentDetailPage() {
   const params = useParams();
+
   const clientId = params.clientId as string;
   const taxYearId = params.taxYearId as string;
   const amendmentId = params.amendmentId as string;
@@ -41,31 +63,18 @@ export default function AmendmentDetailPage() {
   const [userId, setUserId] = useState("");
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
-  const [amendment, setAmendment] = useState<Row | null>(null);
   const [workflow, setWorkflow] = useState<Row | null>(null);
+  const [amendment, setAmendment] = useState<Row | null>(null);
   const [quarters, setQuarters] = useState<Row[]>([]);
   const [auditTrail, setAuditTrail] = useState<Row[]>([]);
   const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
   const [selectedLog, setSelectedLog] = useState<Row | null>(null);
-  const [viewerMode, setViewerMode] = useState<"request" | "response" | "headers" | null>(null);
+  const [viewerMode, setViewerMode] = useState<ViewerMode>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [message, setMessage] = useState("");
 
-  const money = (value: any) =>
-    new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency: "GBP",
-    }).format(Number(value || 0));
-
-  const amount = (row: Row, keys: string[]) => {
-    for (const key of keys) {
-      if (row?.[key] !== undefined && row?.[key] !== null) {
-        return Number(row[key]);
-      }
-    }
-    return 0;
-  };
+  const status = normalise(amendment?.status || "draft");
 
   const clientName = useMemo(() => {
     if (!client) return "Client";
@@ -76,20 +85,21 @@ export default function AmendmentDetailPage() {
     );
   }, [client]);
 
-  const totals = useMemo(() => {
+  const currentTotals = useMemo(() => {
     let income = 0;
     let expenses = 0;
 
-    quarters.forEach((q) => {
-      income += amount(q, [
+    quarters.forEach((quarter) => {
+      income += getAmount(quarter, [
         "income",
         "income_total",
         "total_income",
         "turnover",
         "sales",
+        "gross_income",
       ]);
 
-      expenses += amount(q, [
+      expenses += getAmount(quarter, [
         "expenses",
         "expense_total",
         "total_expenses",
@@ -104,17 +114,56 @@ export default function AmendmentDetailPage() {
     };
   }, [quarters]);
 
-  const originalIncome = Number(amendment?.annual_income_snapshot || 0);
-  const originalExpenses = Number(amendment?.annual_expenses_snapshot || 0);
-  const originalProfit = Number(amendment?.annual_profit_snapshot || 0);
+  const originalTotals = useMemo(() => {
+    const income = Number(amendment?.annual_income_snapshot || 0);
+    const expenses = Number(amendment?.annual_expenses_snapshot || 0);
+    const profit =
+      amendment?.annual_profit_snapshot !== undefined &&
+      amendment?.annual_profit_snapshot !== null
+        ? Number(amendment.annual_profit_snapshot || 0)
+        : income - expenses;
 
-  const variance = {
-    income: totals.income - originalIncome,
-    expenses: totals.expenses - originalExpenses,
-    profit: totals.profit - originalProfit,
-  };
+    return {
+      income,
+      expenses,
+      profit,
+    };
+  }, [amendment]);
 
-  const status = normalise(amendment?.status || "draft");
+  const lockedTotals = useMemo(() => {
+    const income =
+      amendment?.locked_income !== undefined && amendment?.locked_income !== null
+        ? Number(amendment.locked_income || 0)
+        : null;
+
+    const expenses =
+      amendment?.locked_expenses !== undefined &&
+      amendment?.locked_expenses !== null
+        ? Number(amendment.locked_expenses || 0)
+        : null;
+
+    const profit =
+      amendment?.locked_profit !== undefined && amendment?.locked_profit !== null
+        ? Number(amendment.locked_profit || 0)
+        : income !== null && expenses !== null
+        ? income - expenses
+        : null;
+
+    return {
+      income,
+      expenses,
+      profit,
+    };
+  }, [amendment]);
+
+  const variance = useMemo(
+    () => ({
+      income: currentTotals.income - originalTotals.income,
+      expenses: currentTotals.expenses - originalTotals.expenses,
+      profit: currentTotals.profit - originalTotals.profit,
+    }),
+    [currentTotals, originalTotals]
+  );
 
   const amendmentLocked = Boolean(
     amendment?.locked || LOCKED_STATUSES.includes(status)
@@ -125,28 +174,39 @@ export default function AmendmentDetailPage() {
   );
 
   const originalSubmitted = Boolean(
-    workflow?.submitted || workflow?.status === "submitted"
+    workflow?.submitted ||
+      normalise(workflow?.status) === "submitted" ||
+      workflow?.hmrc_submission_id ||
+      amendment?.original_hmrc_submission_id
   );
 
   const hasReason = Boolean(String(amendment?.reason || "").trim());
 
-  const readiness = {
-    originalSubmitted,
-    hasReason,
-    notSubmitted: !amendmentSubmitted,
-    locked: amendmentLocked,
-    hasVariance:
-      variance.income !== 0 || variance.expenses !== 0 || variance.profit !== 0,
-  };
+  const hasVariance =
+    variance.income !== 0 || variance.expenses !== 0 || variance.profit !== 0;
+
+  const canEditReason = !amendmentLocked && !amendmentSubmitted;
 
   const canSubmitForReview =
-    originalSubmitted && hasReason && !amendmentLocked && status === "draft";
+    originalSubmitted &&
+    hasReason &&
+    !amendmentLocked &&
+    !amendmentSubmitted &&
+    status === "draft";
 
   const canApprove =
-    originalSubmitted && hasReason && !amendmentLocked && status === "in_review";
+    originalSubmitted &&
+    hasReason &&
+    !amendmentLocked &&
+    !amendmentSubmitted &&
+    status === "in_review";
 
   const canLock =
-    originalSubmitted && hasReason && !amendmentLocked && status === "approved";
+    originalSubmitted &&
+    hasReason &&
+    !amendmentLocked &&
+    !amendmentSubmitted &&
+    status === "approved";
 
   const canUnlock =
     originalSubmitted &&
@@ -155,7 +215,10 @@ export default function AmendmentDetailPage() {
     status === "locked";
 
   const canSubmitToHmrc =
-    originalSubmitted && amendmentLocked && !amendmentSubmitted && status === "locked";
+    originalSubmitted &&
+    amendmentLocked &&
+    !amendmentSubmitted &&
+    status === "locked";
 
   const viewerTitle =
     viewerMode === "request"
@@ -179,9 +242,9 @@ export default function AmendmentDetailPage() {
     setLoading(true);
     setMessage("");
 
-    const { data: userData } = await supabase.auth.getUser();
+    const { data: userData, error: userError } = await supabase.auth.getUser();
 
-    if (!userData.user) {
+    if (userError || !userData.user) {
       window.location.href = "/auth/login";
       return;
     }
@@ -273,17 +336,23 @@ export default function AmendmentDetailPage() {
       .eq("tax_year_id", taxYearId)
       .eq("submission_type", "final_declaration_amendment")
       .order("created_at", { ascending: false })
-      .limit(20);
+      .limit(50);
 
     setSubmissionLogs(
-      (logs || []).filter((log) => log.amendment_id === amendmentId || log.meta?.amendment_id === amendmentId)
+      (logs || []).filter(
+        (log) =>
+          log.amendment_id === amendmentId ||
+          log.meta?.amendment_id === amendmentId
+      )
     );
 
     setLoading(false);
   };
 
   useEffect(() => {
-    if (clientId && taxYearId && amendmentId) loadData();
+    if (clientId && taxYearId && amendmentId) {
+      loadData();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId, amendmentId]);
 
@@ -306,23 +375,31 @@ export default function AmendmentDetailPage() {
       to_status: toStatus,
       notes,
       meta: {
+        workflow_type: "final_declaration_amendment",
         amendment_id: amendment.id,
         amendment_number: amendment.amendment_number || null,
         original_final_declaration_id:
           amendment.original_final_declaration_id || workflow?.id || null,
         original_hmrc_submission_id:
-          amendment.original_hmrc_submission_id || workflow?.hmrc_submission_id || null,
+          amendment.original_hmrc_submission_id ||
+          workflow?.hmrc_submission_id ||
+          null,
         original_hmrc_correlation_id:
-          amendment.original_hmrc_correlation_id || workflow?.hmrc_correlation_id || null,
-        current_income: totals.income,
-        current_expenses: totals.expenses,
-        current_profit: totals.profit,
-        original_income: originalIncome,
-        original_expenses: originalExpenses,
-        original_profit: originalProfit,
+          amendment.original_hmrc_correlation_id ||
+          workflow?.hmrc_correlation_id ||
+          null,
+        original_income: originalTotals.income,
+        original_expenses: originalTotals.expenses,
+        original_profit: originalTotals.profit,
+        current_income: currentTotals.income,
+        current_expenses: currentTotals.expenses,
+        current_profit: currentTotals.profit,
         variance_income: variance.income,
         variance_expenses: variance.expenses,
         variance_profit: variance.profit,
+        locked_income: lockedTotals.income,
+        locked_expenses: lockedTotals.expenses,
+        locked_profit: lockedTotals.profit,
         created_from_page: "amendment_detail_page",
         ...extraMeta,
       },
@@ -349,6 +426,32 @@ export default function AmendmentDetailPage() {
     const previousStatus = amendment.status || "draft";
     const nextStatus = payload.status || previousStatus;
 
+    const { data: latest, error: latestError } = await supabase
+      .from("tax_year_amendments")
+      .select("*")
+      .eq("id", amendment.id)
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .maybeSingle();
+
+    if (latestError || !latest) {
+      setMessage(latestError?.message || "Unable to verify amendment state.");
+      setActionLoading(false);
+      return;
+    }
+
+    const latestStatus = normalise(latest.status || "draft");
+    const latestSubmitted = Boolean(
+      latest.hmrc_submission_id || SUBMITTED_STATUSES.includes(latestStatus)
+    );
+
+    if (latestSubmitted) {
+      setMessage("This amendment has already been submitted and cannot be changed.");
+      await loadData();
+      setActionLoading(false);
+      return;
+    }
+
     const { error } = await supabase
       .from("tax_year_amendments")
       .update({
@@ -357,7 +460,8 @@ export default function AmendmentDetailPage() {
       } as any)
       .eq("id", amendment.id)
       .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId);
+      .eq("tax_year_id", taxYearId)
+      .is("hmrc_submission_id", null);
 
     if (error) {
       setMessage(error.message);
@@ -377,8 +481,8 @@ export default function AmendmentDetailPage() {
   const saveReason = async () => {
     if (!amendment) return;
 
-    if (amendmentLocked) {
-      setMessage("This amendment is locked. Reason cannot be changed.");
+    if (!canEditReason) {
+      setMessage("This amendment is locked or submitted. Reason cannot be changed.");
       return;
     }
 
@@ -394,7 +498,7 @@ export default function AmendmentDetailPage() {
 
   const submitForReview = async () => {
     if (!canSubmitForReview) {
-      setMessage("Reason and original submission are required before review.");
+      setMessage("Reason and original HMRC submission are required before review.");
       return;
     }
 
@@ -402,6 +506,8 @@ export default function AmendmentDetailPage() {
       {
         status: "in_review",
         locked: false,
+        submitted_for_review_at: new Date().toISOString(),
+        submitted_for_review_by: userId || null,
       },
       "Amendment submitted for review.",
       "amendment_submit_for_review",
@@ -441,16 +547,16 @@ export default function AmendmentDetailPage() {
         locked: true,
         locked_at: new Date().toISOString(),
         locked_by: userId || null,
-        locked_income: totals.income,
-        locked_expenses: totals.expenses,
-        locked_profit: totals.profit,
+        locked_income: currentTotals.income,
+        locked_expenses: currentTotals.expenses,
+        locked_profit: currentTotals.profit,
         variance_income: variance.income,
         variance_expenses: variance.expenses,
         variance_profit: variance.profit,
       },
       "Amendment locked for HMRC submission.",
       "amendment_locked",
-      "Amendment locked. Locked totals and variances preserved."
+      "Amendment locked. Locked totals and variance values preserved."
     );
   };
 
@@ -480,11 +586,11 @@ export default function AmendmentDetailPage() {
     }
 
     setMessage(
-      "HMRC amendment submission route is the next implementation step. This button is intentionally blocked until server-side duplicate protection and evidence preservation are added."
+      "Next step: add the server-side HMRC amendment submission route. This UI is intentionally blocked until duplicate protection, submission ledger insert, and HMRC evidence preservation are handled server-side."
     );
   };
 
-  const openViewer = (log: Row, mode: "request" | "response" | "headers") => {
+  const openViewer = (log: Row, mode: Exclude<ViewerMode, null>) => {
     setSelectedLog(log);
     setViewerMode(mode);
   };
@@ -532,9 +638,10 @@ export default function AmendmentDetailPage() {
           </p>
 
           <p style={styles.subtitle}>
-            Current status:{" "}
+            Status:{" "}
             <strong>{String(amendment?.status || "draft").replaceAll("_", " ")}</strong>{" "}
-            · Lock: <strong>{amendmentLocked ? "Locked" : "Unlocked"}</strong>
+            · Lock: <strong>{amendmentLocked ? "Locked" : "Unlocked"}</strong> ·
+            HMRC: <strong>{amendmentSubmitted ? "Submitted" : "Not submitted"}</strong>
           </p>
         </div>
 
@@ -548,23 +655,23 @@ export default function AmendmentDetailPage() {
       {message && <div style={styles.message}>{message}</div>}
 
       <section style={styles.lockBanner}>
-        <h2 style={styles.lockTitle}>Original declaration remains protected</h2>
+        <h2 style={styles.lockTitle}>Original declaration protected</h2>
         <p style={styles.lockText}>
-          This amendment workflow is separate from the original Final
-          Declaration. Original HMRC submission evidence is preserved and must
-          not be overwritten.
+          This amendment is separate from the original Final Declaration. Original
+          HMRC submission ID, correlation ID, request payload and response evidence
+          must remain preserved and must never be overwritten by amendment activity.
         </p>
       </section>
 
       <section style={styles.statsGrid}>
         <div style={styles.statCard}>
           <span style={styles.statLabel}>Original profit</span>
-          <strong style={styles.statValue}>{money(originalProfit)}</strong>
+          <strong style={styles.statValue}>{money(originalTotals.profit)}</strong>
         </div>
 
         <div style={styles.statCard}>
           <span style={styles.statLabel}>Current profit</span>
-          <strong style={styles.statValue}>{money(totals.profit)}</strong>
+          <strong style={styles.statValue}>{money(currentTotals.profit)}</strong>
         </div>
 
         <div style={styles.statCard}>
@@ -575,9 +682,9 @@ export default function AmendmentDetailPage() {
         </div>
 
         <div style={styles.statCard}>
-          <span style={styles.statLabel}>HMRC amendment</span>
-          <strong style={amendmentSubmitted ? styles.passValue : styles.statValue}>
-            {amendmentSubmitted ? "Submitted" : "Not submitted"}
+          <span style={styles.statLabel}>Locked profit</span>
+          <strong style={styles.statValue}>
+            {lockedTotals.profit === null ? "-" : money(lockedTotals.profit)}
           </strong>
         </div>
       </section>
@@ -589,36 +696,36 @@ export default function AmendmentDetailPage() {
           <div style={styles.checkList}>
             <div style={styles.checkRow}>
               <span>Original Final Declaration submitted</span>
-              <strong style={readiness.originalSubmitted ? styles.passText : styles.failText}>
-                {readiness.originalSubmitted ? "Pass" : "Fail"}
+              <strong style={originalSubmitted ? styles.passText : styles.failText}>
+                {originalSubmitted ? "Pass" : "Fail"}
               </strong>
             </div>
 
             <div style={styles.checkRow}>
               <span>Amendment reason entered</span>
-              <strong style={readiness.hasReason ? styles.passText : styles.failText}>
-                {readiness.hasReason ? "Pass" : "Fail"}
+              <strong style={hasReason ? styles.passText : styles.failText}>
+                {hasReason ? "Pass" : "Fail"}
               </strong>
             </div>
 
             <div style={styles.checkRow}>
               <span>Amendment not already submitted</span>
-              <strong style={readiness.notSubmitted ? styles.passText : styles.failText}>
-                {readiness.notSubmitted ? "Pass" : "Fail"}
+              <strong style={!amendmentSubmitted ? styles.passText : styles.failText}>
+                {!amendmentSubmitted ? "Pass" : "Fail"}
               </strong>
             </div>
 
             <div style={styles.checkRow}>
               <span>Locked for HMRC submission</span>
-              <strong style={readiness.locked ? styles.passText : styles.failText}>
-                {readiness.locked ? "Yes" : "No"}
+              <strong style={amendmentLocked ? styles.passText : styles.failText}>
+                {amendmentLocked ? "Yes" : "No"}
               </strong>
             </div>
 
             <div style={styles.checkRow}>
               <span>Variance detected</span>
-              <strong style={readiness.hasVariance ? styles.passText : styles.failText}>
-                {readiness.hasVariance ? "Yes" : "No"}
+              <strong style={hasVariance ? styles.passText : styles.failText}>
+                {hasVariance ? "Yes" : "No"}
               </strong>
             </div>
           </div>
@@ -631,7 +738,7 @@ export default function AmendmentDetailPage() {
             <div style={styles.checkRow}>
               <span>Original Final Declaration</span>
               <strong style={styles.monospace}>
-                {amendment?.original_final_declaration_id || "-"}
+                {amendment?.original_final_declaration_id || workflow?.id || "-"}
               </strong>
             </div>
 
@@ -670,10 +777,10 @@ export default function AmendmentDetailPage() {
 
         <textarea
           value={amendment?.reason || ""}
-          disabled={amendmentLocked || actionLoading}
-          onChange={(e) =>
-            setAmendment((prev) =>
-              prev ? { ...prev, reason: e.target.value } : prev
+          disabled={!canEditReason || actionLoading}
+          onChange={(event) =>
+            setAmendment((previous) =>
+              previous ? { ...previous, reason: event.target.value } : previous
             )
           }
           style={styles.textarea}
@@ -683,8 +790,8 @@ export default function AmendmentDetailPage() {
         <div style={styles.actionsRow}>
           <button
             onClick={saveReason}
-            disabled={amendmentLocked || actionLoading}
-            style={amendmentLocked ? styles.disabledButton : styles.primaryButton}
+            disabled={!canEditReason || actionLoading}
+            style={!canEditReason ? styles.disabledButton : styles.primaryButton}
           >
             Save Reason
           </button>
@@ -748,34 +855,46 @@ export default function AmendmentDetailPage() {
                 <th style={styles.th}>Original snapshot</th>
                 <th style={styles.th}>Current records</th>
                 <th style={styles.th}>Variance</th>
+                <th style={styles.th}>Locked value</th>
               </tr>
             </thead>
 
             <tbody>
               <tr>
                 <td style={styles.td}>Income</td>
-                <td style={styles.td}>{money(originalIncome)}</td>
-                <td style={styles.td}>{money(totals.income)}</td>
+                <td style={styles.td}>{money(originalTotals.income)}</td>
+                <td style={styles.td}>{money(currentTotals.income)}</td>
                 <td style={styles.td}>
                   <strong>{money(variance.income)}</strong>
+                </td>
+                <td style={styles.td}>
+                  {lockedTotals.income === null ? "-" : money(lockedTotals.income)}
                 </td>
               </tr>
 
               <tr>
                 <td style={styles.td}>Expenses</td>
-                <td style={styles.td}>{money(originalExpenses)}</td>
-                <td style={styles.td}>{money(totals.expenses)}</td>
+                <td style={styles.td}>{money(originalTotals.expenses)}</td>
+                <td style={styles.td}>{money(currentTotals.expenses)}</td>
                 <td style={styles.td}>
                   <strong>{money(variance.expenses)}</strong>
+                </td>
+                <td style={styles.td}>
+                  {lockedTotals.expenses === null
+                    ? "-"
+                    : money(lockedTotals.expenses)}
                 </td>
               </tr>
 
               <tr>
                 <td style={styles.td}>Profit</td>
-                <td style={styles.td}>{money(originalProfit)}</td>
-                <td style={styles.td}>{money(totals.profit)}</td>
+                <td style={styles.td}>{money(originalTotals.profit)}</td>
+                <td style={styles.td}>{money(currentTotals.profit)}</td>
                 <td style={styles.td}>
                   <strong>{money(variance.profit)}</strong>
+                </td>
+                <td style={styles.td}>
+                  {lockedTotals.profit === null ? "-" : money(lockedTotals.profit)}
                 </td>
               </tr>
             </tbody>
@@ -829,6 +948,7 @@ export default function AmendmentDetailPage() {
                         >
                           Request
                         </button>
+
                         <button
                           type="button"
                           onClick={() => openViewer(log, "response")}
@@ -836,6 +956,7 @@ export default function AmendmentDetailPage() {
                         >
                           Response
                         </button>
+
                         <button
                           type="button"
                           onClick={() => openViewer(log, "headers")}
@@ -865,11 +986,7 @@ export default function AmendmentDetailPage() {
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={closeViewer}
-              style={styles.secondaryButton}
-            >
+            <button type="button" onClick={closeViewer} style={styles.secondaryButton}>
               Close viewer
             </button>
           </div>
@@ -891,6 +1008,7 @@ export default function AmendmentDetailPage() {
                   <strong>{String(item.action || "").replaceAll("_", " ")}</strong>
                   <p style={styles.muted}>{item.notes || "-"}</p>
                 </div>
+
                 <span style={styles.auditTime}>{formatDate(item.created_at)}</span>
               </div>
             ))}
@@ -902,9 +1020,9 @@ export default function AmendmentDetailPage() {
         <h2 style={styles.sectionTitle}>Quarter Data Reference</h2>
 
         <p style={styles.muted}>
-          This page currently compares the original locked snapshot against
-          current records. The next step will add controlled amendment adjustment
-          records so original quarter data remains untouched.
+          Current records are used only to calculate the amendment variance.
+          Original HMRC submission evidence remains separate. Once the amendment
+          is locked, the locked totals above become the submission basis.
         </p>
 
         <div style={styles.tableWrap}>
@@ -921,16 +1039,17 @@ export default function AmendmentDetailPage() {
             </thead>
 
             <tbody>
-              {quarters.map((q) => {
-                const income = amount(q, [
+              {quarters.map((quarter) => {
+                const income = getAmount(quarter, [
                   "income",
                   "income_total",
                   "total_income",
                   "turnover",
                   "sales",
+                  "gross_income",
                 ]);
 
-                const expenses = amount(q, [
+                const expenses = getAmount(quarter, [
                   "expenses",
                   "expense_total",
                   "total_expenses",
@@ -938,16 +1057,16 @@ export default function AmendmentDetailPage() {
                 ]);
 
                 return (
-                  <tr key={q.id}>
+                  <tr key={quarter.id}>
                     <td style={styles.td}>
-                      <strong>{q.quarter_name || "Quarter"}</strong>
+                      <strong>{quarter.quarter_name || "Quarter"}</strong>
                     </td>
                     <td style={styles.td}>
-                      {q.start_date || "?"} to {q.end_date || "?"}
+                      {quarter.start_date || "?"} to {quarter.end_date || "?"}
                     </td>
                     <td style={styles.td}>
                       <span style={styles.badge}>
-                        {q.status || "not_started"}
+                        {quarter.status || "not_started"}
                       </span>
                     </td>
                     <td style={styles.td}>{money(income)}</td>
