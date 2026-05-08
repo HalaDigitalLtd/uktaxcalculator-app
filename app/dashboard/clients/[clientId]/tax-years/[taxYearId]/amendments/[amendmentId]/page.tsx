@@ -4,1424 +4,1597 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../../../../../../lib/supabaseClient";
+import { authenticatedFetch } from "../../../../../../../../lib/authenticatedFetch";
 
 type Row = Record<string, any>;
 
-type ViewerMode = "request" | "response" | "headers" | null;
+type AdjustmentForm = {
+  adjustment_type: "income" | "expense";
+  direction: "increase" | "decrease";
+  category: string;
+  amount: string;
+  description: string;
+  reason: string;
+  quarter_id: string;
+};
 
-const SUBMITTED_STATUSES = ["submitted", "accepted", "hmrc_submitted"];
-const LOCKED_STATUSES = ["locked", ...SUBMITTED_STATUSES];
+const emptyAdjustmentForm: AdjustmentForm = {
+  adjustment_type: "income",
+  direction: "increase",
+  category: "",
+  amount: "",
+  description: "",
+  reason: "",
+  quarter_id: "",
+};
 
-function normalise(value: any) {
-  return String(value || "").toLowerCase().trim();
-}
-
-function formatDate(value: any) {
-  if (!value) return "-";
-  try {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "-";
-    return date.toLocaleString("en-GB");
-  } catch {
-    return "-";
-  }
-}
-
-function formatJson(value: any) {
-  if (!value) return "No data stored.";
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function getAmount(row: Row, keys: string[]) {
-  for (const key of keys) {
-    if (row?.[key] !== undefined && row?.[key] !== null) {
-      const value = Number(row[key]);
-      return Number.isFinite(value) ? value : 0;
-    }
-  }
-  return 0;
+function n(value: any) {
+  const x = Number(value || 0);
+  return Number.isFinite(x) ? x : 0;
 }
 
 function money(value: any) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
     currency: "GBP",
-  }).format(Number(value || 0));
+  }).format(n(value));
+}
+
+function pickNumber(row: any, keys: string[]) {
+  if (!row) return 0;
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && row[key] !== "") {
+      return n(row[key]);
+    }
+  }
+  return 0;
+}
+
+function signedAdjustment(row: Row) {
+  return row.direction === "decrease" ? -n(row.amount) : n(row.amount);
+}
+
+function formatDate(value: any) {
+  if (!value) return "-";
+  try {
+    return new Date(value).toLocaleString("en-GB");
+  } catch {
+    return "-";
+  }
+}
+
+function quarterLabel(q: Row) {
+  const start =
+    q.period_start ||
+    q.periodStartDate ||
+    q.period_start_date ||
+    q.start_date ||
+    q.from_date ||
+    "Start";
+
+  const end =
+    q.period_end ||
+    q.periodEndDate ||
+    q.period_end_date ||
+    q.end_date ||
+    q.to_date ||
+    "End";
+
+  return `${start} to ${end}`;
+}
+
+function statusClass(status: any) {
+  const s = String(status || "draft").toLowerCase();
+  if (s.includes("submitted")) return "status green";
+  if (s.includes("locked")) return "status blue";
+  if (s.includes("approved")) return "status purple";
+  if (s.includes("review")) return "status amber";
+  if (s.includes("failed")) return "status red";
+  return "status grey";
 }
 
 export default function AmendmentDetailPage() {
   const params = useParams();
 
-  const clientId = params.clientId as string;
-  const taxYearId = params.taxYearId as string;
-  const amendmentId = params.amendmentId as string;
+  const clientId = String(params.clientId || "");
+  const taxYearId = String(params.taxYearId || "");
+  const amendmentId = String(params.amendmentId || "");
 
-  const [userId, setUserId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const [user, setUser] = useState<Row | null>(null);
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
-  const [workflow, setWorkflow] = useState<Row | null>(null);
   const [amendment, setAmendment] = useState<Row | null>(null);
   const [quarters, setQuarters] = useState<Row[]>([]);
+  const [adjustments, setAdjustments] = useState<Row[]>([]);
   const [auditTrail, setAuditTrail] = useState<Row[]>([]);
-  const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
-  const [selectedLog, setSelectedLog] = useState<Row | null>(null);
-  const [viewerMode, setViewerMode] = useState<ViewerMode>(null);
-  const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
+
+  const [form, setForm] = useState<AdjustmentForm>(emptyAdjustmentForm);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
-  const status = normalise(amendment?.status || "draft");
+  async function writeAudit(action: string, details: Row = {}) {
+    try {
+      await supabase.from("hmrc_submission_logs").insert({
+        client_id: clientId,
+        tax_year_id: taxYearId,
+        amendment_id: amendmentId,
+        action,
+        status: details.status || "success",
+        message: details.message || action,
+        meta: {
+          amendment_id: amendmentId,
+          client_id: clientId,
+          tax_year_id: taxYearId,
+          action,
+          ...details,
+        },
+        created_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error("Audit write failed", e);
+    }
+  }
 
-  const clientName = useMemo(() => {
-    if (!client) return "Client";
-    return (
-      `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
-      client.email ||
-      "Client"
-    );
-  }, [client]);
+  async function loadData() {
+    setLoading(true);
+    setError("");
 
-  const currentTotals = useMemo(() => {
+    try {
+      const { data: sessionData } = await supabase.auth.getUser();
+      setUser(sessionData?.user || null);
+
+      const [
+        amendmentRes,
+        clientRes,
+        taxYearRes,
+        quartersRes,
+        adjustmentsRes,
+        auditRes,
+      ] = await Promise.all([
+        supabase
+          .from("tax_year_amendments")
+          .select("*")
+          .eq("id", amendmentId)
+          .maybeSingle(),
+
+        supabase.from("clients").select("*").eq("id", clientId).maybeSingle(),
+
+        supabase.from("tax_years").select("*").eq("id", taxYearId).maybeSingle(),
+
+        supabase.from("quarters").select("*").eq("tax_year_id", taxYearId),
+
+        supabase
+          .from("tax_year_amendment_adjustments")
+          .select("*")
+          .eq("amendment_id", amendmentId)
+          .order("created_at", { ascending: false }),
+
+        supabase
+          .from("hmrc_submission_logs")
+          .select("*")
+          .filter("meta->>amendment_id", "eq", amendmentId)
+          .order("created_at", { ascending: false }),
+      ]);
+
+      if (amendmentRes.error) throw amendmentRes.error;
+      if (clientRes.error) throw clientRes.error;
+      if (taxYearRes.error) throw taxYearRes.error;
+      if (quartersRes.error) throw quartersRes.error;
+      if (adjustmentsRes.error) throw adjustmentsRes.error;
+      if (auditRes.error) throw auditRes.error;
+
+      setAmendment(amendmentRes.data);
+      setClient(clientRes.data);
+      setTaxYear(taxYearRes.data);
+      setQuarters(quartersRes.data || []);
+      setAdjustments(adjustmentsRes.data || []);
+      setAuditTrail(auditRes.data || []);
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message || "Failed to load amendment.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (clientId && taxYearId && amendmentId) loadData();
+  }, [clientId, taxYearId, amendmentId]);
+
+  const activeAdjustments = useMemo(
+    () => adjustments.filter((x) => x.status !== "void"),
+    [adjustments]
+  );
+
+  const originalTotals = useMemo(() => {
+    const meta = amendment?.meta || {};
+
+    const income =
+      pickNumber(amendment, [
+        "original_total_income",
+        "original_income",
+        "locked_original_income",
+        "snapshot_total_income",
+      ]) ||
+      pickNumber(meta, [
+        "original_total_income",
+        "original_income",
+        "total_income",
+        "income",
+      ]);
+
+    const expenses =
+      pickNumber(amendment, [
+        "original_total_expenses",
+        "original_expenses",
+        "locked_original_expenses",
+        "snapshot_total_expenses",
+      ]) ||
+      pickNumber(meta, [
+        "original_total_expenses",
+        "original_expenses",
+        "total_expenses",
+        "expenses",
+      ]);
+
+    return { income, expenses, profit: income - expenses };
+  }, [amendment]);
+
+  const adjustmentTotals = useMemo(() => {
     let income = 0;
     let expenses = 0;
 
-    quarters.forEach((quarter) => {
-      income += getAmount(quarter, [
-        "income",
-        "income_total",
-        "total_income",
-        "turnover",
-        "sales",
-        "gross_income",
-      ]);
+    for (const row of activeAdjustments) {
+      const signed = signedAdjustment(row);
+      if (row.adjustment_type === "income") income += signed;
+      if (row.adjustment_type === "expense") expenses += signed;
+    }
 
-      expenses += getAmount(quarter, [
-        "expenses",
-        "expense_total",
-        "total_expenses",
-        "allowable_expenses",
-      ]);
-    });
+    return { income, expenses, profit: income - expenses };
+  }, [activeAdjustments]);
 
-    return {
-      income,
-      expenses,
-      profit: income - expenses,
-    };
-  }, [quarters]);
+  const amendedTotals = useMemo(() => {
+    const income = originalTotals.income + adjustmentTotals.income;
+    const expenses = originalTotals.expenses + adjustmentTotals.expenses;
+    return { income, expenses, profit: income - expenses };
+  }, [originalTotals, adjustmentTotals]);
 
-  const originalTotals = useMemo(() => {
-    const income = Number(amendment?.annual_income_snapshot || 0);
-    const expenses = Number(amendment?.annual_expenses_snapshot || 0);
-    const profit =
-      amendment?.annual_profit_snapshot !== undefined &&
-      amendment?.annual_profit_snapshot !== null
-        ? Number(amendment.annual_profit_snapshot || 0)
-        : income - expenses;
-
-    return {
-      income,
-      expenses,
-      profit,
-    };
-  }, [amendment]);
-
-  const lockedTotals = useMemo(() => {
-    const income =
-      amendment?.locked_income !== undefined && amendment?.locked_income !== null
-        ? Number(amendment.locked_income || 0)
-        : null;
-
-    const expenses =
-      amendment?.locked_expenses !== undefined &&
-      amendment?.locked_expenses !== null
-        ? Number(amendment.locked_expenses || 0)
-        : null;
-
-    const profit =
-      amendment?.locked_profit !== undefined && amendment?.locked_profit !== null
-        ? Number(amendment.locked_profit || 0)
-        : income !== null && expenses !== null
-        ? income - expenses
-        : null;
-
-    return {
-      income,
-      expenses,
-      profit,
-    };
-  }, [amendment]);
-
-  const variance = useMemo(
-    () => ({
-      income: currentTotals.income - originalTotals.income,
-      expenses: currentTotals.expenses - originalTotals.expenses,
-      profit: currentTotals.profit - originalTotals.profit,
-    }),
-    [currentTotals, originalTotals]
+  const isLocked = Boolean(amendment?.locked || amendment?.locked_at);
+  const isSubmitted = Boolean(
+    amendment?.submitted_at ||
+      amendment?.hmrc_submission_id ||
+      amendment?.hmrc_amendment_id ||
+      String(amendment?.status || "").toLowerCase() === "submitted"
   );
 
-  const amendmentLocked = Boolean(
-    amendment?.locked || LOCKED_STATUSES.includes(status)
-  );
-
-  const amendmentSubmitted = Boolean(
-    amendment?.hmrc_submission_id || SUBMITTED_STATUSES.includes(status)
-  );
-
-  const originalSubmitted = Boolean(
-    workflow?.submitted ||
-      normalise(workflow?.status) === "submitted" ||
-      workflow?.hmrc_submission_id ||
-      amendment?.original_hmrc_submission_id
-  );
-
-  const hasReason = Boolean(String(amendment?.reason || "").trim());
-
-  const hasVariance =
-    variance.income !== 0 || variance.expenses !== 0 || variance.profit !== 0;
-
-  const canEditReason = !amendmentLocked && !amendmentSubmitted;
-
-  const canSubmitForReview =
-    originalSubmitted &&
-    hasReason &&
-    !amendmentLocked &&
-    !amendmentSubmitted &&
-    status === "draft";
-
-  const canApprove =
-    originalSubmitted &&
-    hasReason &&
-    !amendmentLocked &&
-    !amendmentSubmitted &&
-    status === "in_review";
-
-  const canLock =
-    originalSubmitted &&
-    hasReason &&
-    !amendmentLocked &&
-    !amendmentSubmitted &&
-    status === "approved";
-
-  const canUnlock =
-    originalSubmitted &&
-    amendmentLocked &&
-    !amendmentSubmitted &&
-    status === "locked";
-
-  const canSubmitToHmrc =
-    originalSubmitted &&
-    amendmentLocked &&
-    !amendmentSubmitted &&
-    status === "locked";
-
-  const viewerTitle =
-    viewerMode === "request"
-      ? "HMRC Amendment Request Payload"
-      : viewerMode === "response"
-      ? "HMRC Amendment Response Payload"
-      : viewerMode === "headers"
-      ? "HMRC Amendment Response Headers"
-      : "";
-
-  const viewerData =
-    viewerMode === "request"
-      ? selectedLog?.request_payload
-      : viewerMode === "response"
-      ? selectedLog?.response_payload
-      : viewerMode === "headers"
-      ? selectedLog?.response_headers
-      : null;
-
-  const loadData = async () => {
-    setLoading(true);
+  async function addAdjustment() {
+    setSaving(true);
+    setError("");
     setMessage("");
 
-    const { data: userData, error: userError } = await supabase.auth.getUser();
+    try {
+      const amount = Number(form.amount);
 
-    if (userError || !userData.user) {
-      window.location.href = "/auth/login";
-      return;
-    }
+      if (isLocked) throw new Error("This amendment is locked.");
+      if (!amount || !Number.isFinite(amount) || amount <= 0) {
+        throw new Error("Enter a valid amount.");
+      }
+      if (!form.description.trim()) throw new Error("Description is required.");
+      if (!form.reason.trim()) throw new Error("Reason is required.");
 
-    setUserId(userData.user.id);
+      const { error: insertError } = await supabase
+        .from("tax_year_amendment_adjustments")
+        .insert({
+          client_id: clientId,
+          tax_year_id: taxYearId,
+          amendment_id: amendmentId,
+          quarter_id: form.quarter_id || null,
+          adjustment_type: form.adjustment_type,
+          direction: form.direction,
+          category: form.category || null,
+          amount,
+          description: form.description.trim(),
+          reason: form.reason.trim(),
+          source: "manual_adjustment",
+          status: "active",
+          created_by: user?.id || null,
+          created_by_email: user?.email || null,
+          meta: {
+            amendment_id: amendmentId,
+            client_id: clientId,
+            tax_year_id: taxYearId,
+            quarter_id: form.quarter_id || null,
+            compliance_note:
+              "Internal digital working paper adjustment. HMRC receives controlled summary totals only.",
+          },
+        });
 
-    const { data: clientData, error: clientError } = await supabase
-      .from("clients")
-      .select("*")
-      .eq("id", clientId)
-      .maybeSingle();
+      if (insertError) throw insertError;
 
-    if (clientError || !clientData) {
-      setMessage(clientError?.message || "Client not found.");
-      setLoading(false);
-      return;
-    }
+      await writeAudit("amendment_adjustment_added", {
+        message: "Adjustment added to amendment ledger.",
+        amount,
+        adjustment_type: form.adjustment_type,
+        direction: form.direction,
+        category: form.category,
+        reason: form.reason,
+      });
 
-    setClient(clientData);
-
-    const { data: taxYearData, error: taxYearError } = await supabase
-      .from("tax_years")
-      .select("*")
-      .eq("id", taxYearId)
-      .eq("client_id", clientId)
-      .maybeSingle();
-
-    if (taxYearError || !taxYearData) {
-      setMessage(taxYearError?.message || "Tax year not found.");
-      setLoading(false);
-      return;
-    }
-
-    setTaxYear(taxYearData);
-
-    const { data: workflowData } = await supabase
-      .from("tax_year_final_declarations")
-      .select("*")
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .maybeSingle();
-
-    setWorkflow(workflowData || null);
-
-    const { data: amendmentData, error: amendmentError } = await supabase
-      .from("tax_year_amendments")
-      .select("*")
-      .eq("id", amendmentId)
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .maybeSingle();
-
-    if (amendmentError || !amendmentData) {
-      setMessage(amendmentError?.message || "Amendment not found.");
-      setLoading(false);
-      return;
-    }
-
-    setAmendment(amendmentData);
-
-    const { data: quarterData, error: quarterError } = await supabase
-      .from("quarters")
-      .select("*")
-      .eq("tax_year_id", taxYearId)
-      .order("start_date", { ascending: true });
-
-    if (quarterError) {
-      setMessage(`Quarter load error: ${quarterError.message}`);
-      setLoading(false);
-      return;
-    }
-
-    setQuarters(quarterData || []);
-
-    const { data: auditRows } = await supabase
-      .from("final_declaration_audit_trail")
-      .select("*")
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .contains("meta", { amendment_id: amendmentId })
-      .order("created_at", { ascending: false });
-
-    setAuditTrail(auditRows || []);
-
-    const { data: logs } = await supabase
-      .from("hmrc_submission_logs")
-      .select("*")
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .eq("submission_type", "final_declaration_amendment")
-      .order("created_at", { ascending: false })
-      .limit(50);
-
-    setSubmissionLogs(
-      (logs || []).filter(
-        (log) =>
-          log.amendment_id === amendmentId ||
-          log.meta?.amendment_id === amendmentId
-      )
-    );
-
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    if (clientId && taxYearId && amendmentId) {
-      loadData();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, taxYearId, amendmentId]);
-
-  const saveAudit = async (
-    action: string,
-    notes: string,
-    fromStatus: string | null,
-    toStatus: string | null,
-    extraMeta: Row = {}
-  ) => {
-    if (!client || !taxYear || !amendment) return;
-
-    const { error } = await supabase.from("final_declaration_audit_trail").insert({
-      workflow_id: workflow?.id || amendment.original_final_declaration_id || null,
-      firm_id: client.firm_id,
-      client_id: client.id,
-      tax_year_id: taxYear.id,
-      action,
-      from_status: fromStatus,
-      to_status: toStatus,
-      notes,
-      meta: {
-        workflow_type: "final_declaration_amendment",
-        amendment_id: amendment.id,
-        amendment_number: amendment.amendment_number || null,
-        original_final_declaration_id:
-          amendment.original_final_declaration_id || workflow?.id || null,
-        original_hmrc_submission_id:
-          amendment.original_hmrc_submission_id ||
-          workflow?.hmrc_submission_id ||
-          null,
-        original_hmrc_correlation_id:
-          amendment.original_hmrc_correlation_id ||
-          workflow?.hmrc_correlation_id ||
-          null,
-        original_income: originalTotals.income,
-        original_expenses: originalTotals.expenses,
-        original_profit: originalTotals.profit,
-        current_income: currentTotals.income,
-        current_expenses: currentTotals.expenses,
-        current_profit: currentTotals.profit,
-        variance_income: variance.income,
-        variance_expenses: variance.expenses,
-        variance_profit: variance.profit,
-        locked_income: lockedTotals.income,
-        locked_expenses: lockedTotals.expenses,
-        locked_profit: lockedTotals.profit,
-        created_from_page: "amendment_detail_page",
-        ...extraMeta,
-      },
-      created_by: userId || null,
-    } as any);
-
-    if (error) {
-      console.error("Amendment audit insert failed:", error);
-      setMessage(`Audit warning: ${error.message}`);
-    }
-  };
-
-  const updateAmendment = async (
-    payload: Row,
-    successMessage: string,
-    auditAction: string,
-    auditNotes: string
-  ) => {
-    if (!amendment) return;
-
-    setActionLoading(true);
-    setMessage("");
-
-    const previousStatus = amendment.status || "draft";
-    const nextStatus = payload.status || previousStatus;
-
-    const { data: latest, error: latestError } = await supabase
-      .from("tax_year_amendments")
-      .select("*")
-      .eq("id", amendment.id)
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .maybeSingle();
-
-    if (latestError || !latest) {
-      setMessage(latestError?.message || "Unable to verify amendment state.");
-      setActionLoading(false);
-      return;
-    }
-
-    const latestStatus = normalise(latest.status || "draft");
-    const latestSubmitted = Boolean(
-      latest.hmrc_submission_id || SUBMITTED_STATUSES.includes(latestStatus)
-    );
-
-    if (latestSubmitted) {
-      setMessage("This amendment has already been submitted and cannot be changed.");
+      setForm(emptyAdjustmentForm);
+      setMessage("Adjustment added successfully.");
       await loadData();
-      setActionLoading(false);
-      return;
+    } catch (e: any) {
+      setError(e.message || "Failed to add adjustment.");
+    } finally {
+      setSaving(false);
     }
+  }
 
-    const { error } = await supabase
-      .from("tax_year_amendments")
-      .update({
-        ...payload,
-        updated_at: new Date().toISOString(),
-      } as any)
-      .eq("id", amendment.id)
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .is("hmrc_submission_id", null);
+  async function voidAdjustment(row: Row) {
+    const reason = window.prompt("Reason for voiding this adjustment?");
+    if (!reason) return;
 
-    if (error) {
-      setMessage(error.message);
-      setActionLoading(false);
-      return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      if (isLocked) throw new Error("Unlock amendment before voiding adjustment.");
+
+      const { error: updateError } = await supabase
+        .from("tax_year_amendment_adjustments")
+        .update({
+          status: "void",
+          voided_by: user?.id || null,
+          voided_by_email: user?.email || null,
+          voided_at: new Date().toISOString(),
+          void_reason: reason,
+        })
+        .eq("id", row.id);
+
+      if (updateError) throw updateError;
+
+      await writeAudit("amendment_adjustment_voided", {
+        message: "Adjustment voided.",
+        adjustment_id: row.id,
+        reason,
+      });
+
+      setMessage("Adjustment voided.");
+      await loadData();
+    } catch (e: any) {
+      setError(e.message || "Failed to void adjustment.");
+    } finally {
+      setSaving(false);
     }
+  }
 
-    await saveAudit(auditAction, auditNotes, previousStatus, nextStatus, {
-      update_payload: payload,
-    });
+  async function submitForReview() {
+    setSaving(true);
+    setError("");
+    setMessage("");
 
-    setMessage(successMessage);
-    await loadData();
-    setActionLoading(false);
-  };
+    try {
+      if (activeAdjustments.length === 0) {
+        throw new Error("Add at least one adjustment before review.");
+      }
 
-  const saveReason = async () => {
-    if (!amendment) return;
+      const { error: updateError } = await supabase
+        .from("tax_year_amendments")
+        .update({
+          status: "submitted_for_review",
+          submitted_for_review_at: new Date().toISOString(),
+          submitted_for_review_by: user?.id || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", amendmentId);
 
-    if (!canEditReason) {
-      setMessage("This amendment is locked or submitted. Reason cannot be changed.");
-      return;
+      if (updateError) throw updateError;
+
+      await writeAudit("amendment_submitted_for_review", {
+        message: "Amendment submitted for accountant review.",
+        originalTotals,
+        adjustmentTotals,
+        amendedTotals,
+      });
+
+      setMessage("Submitted for accountant review.");
+      await loadData();
+    } catch (e: any) {
+      setError(e.message || "Failed to submit for review.");
+    } finally {
+      setSaving(false);
     }
+  }
 
-    await updateAmendment(
-      {
-        reason: amendment.reason || "",
-      },
-      "Amendment reason saved.",
-      "amendment_reason_saved",
-      "Amendment reason updated."
-    );
-  };
+  async function approveAmendment() {
+    setSaving(true);
+    setError("");
+    setMessage("");
 
-  const submitForReview = async () => {
-    if (!canSubmitForReview) {
-      setMessage("Reason and original HMRC submission are required before review.");
-      return;
+    try {
+      const { error: updateError } = await supabase
+        .from("tax_year_amendments")
+        .update({
+          status: "approved",
+          approved: true,
+          approved_at: new Date().toISOString(),
+          approved_by: user?.id || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", amendmentId);
+
+      if (updateError) throw updateError;
+
+      await writeAudit("amendment_approved", {
+        message: "Amendment approved by accountant.",
+        originalTotals,
+        adjustmentTotals,
+        amendedTotals,
+      });
+
+      setMessage("Amendment approved.");
+      await loadData();
+    } catch (e: any) {
+      setError(e.message || "Failed to approve amendment.");
+    } finally {
+      setSaving(false);
     }
+  }
 
-    await updateAmendment(
-      {
-        status: "in_review",
-        locked: false,
-        submitted_for_review_at: new Date().toISOString(),
-        submitted_for_review_by: userId || null,
-      },
-      "Amendment submitted for review.",
-      "amendment_submit_for_review",
-      "Amendment submitted for accountant review."
-    );
-  };
+  async function lockAmendment() {
+    setSaving(true);
+    setError("");
+    setMessage("");
 
-  const approveAmendment = async () => {
-    if (!canApprove) {
-      setMessage("Amendment must be in review before approval.");
-      return;
+    try {
+      if (activeAdjustments.length === 0) {
+        throw new Error("Cannot lock without adjustment ledger entries.");
+      }
+
+      const { error: updateError } = await supabase
+        .from("tax_year_amendments")
+        .update({
+          status: "locked",
+          locked: true,
+          locked_at: new Date().toISOString(),
+          locked_by: user?.id || null,
+
+          locked_original_income: originalTotals.income,
+          locked_original_expenses: originalTotals.expenses,
+          locked_original_profit: originalTotals.profit,
+
+          locked_adjustment_income: adjustmentTotals.income,
+          locked_adjustment_expenses: adjustmentTotals.expenses,
+          locked_adjustment_profit: adjustmentTotals.profit,
+
+          locked_amended_income: amendedTotals.income,
+          locked_amended_expenses: amendedTotals.expenses,
+          locked_amended_profit: amendedTotals.profit,
+
+          variance_income: adjustmentTotals.income,
+          variance_expenses: adjustmentTotals.expenses,
+          variance_profit: adjustmentTotals.profit,
+
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", amendmentId);
+
+      if (updateError) throw updateError;
+
+      await writeAudit("amendment_locked", {
+        message: "Amendment locked from adjustment ledger.",
+        originalTotals,
+        adjustmentTotals,
+        amendedTotals,
+      });
+
+      setMessage("Amendment locked. Totals are now frozen.");
+      await loadData();
+    } catch (e: any) {
+      setError(e.message || "Failed to lock amendment.");
+    } finally {
+      setSaving(false);
     }
+  }
 
-    await updateAmendment(
-      {
-        status: "approved",
-        approved: true,
-        approved_at: new Date().toISOString(),
-        approved_by: userId || null,
-        locked: false,
-      },
-      "Amendment approved.",
-      "amendment_approved",
-      "Accountant approved the amendment."
-    );
-  };
+  async function unlockAmendment() {
+    const reason = window.prompt("Reason for unlocking amendment?");
+    if (!reason) return;
 
-  const lockAmendment = async () => {
-    if (!canLock) {
-      setMessage("Amendment must be approved before locking.");
-      return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      if (isSubmitted) throw new Error("Submitted amendment cannot be unlocked.");
+
+      const { error: updateError } = await supabase
+        .from("tax_year_amendments")
+        .update({
+          status: "unlocked",
+          locked: false,
+          unlocked_at: new Date().toISOString(),
+          unlocked_by: user?.id || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", amendmentId);
+
+      if (updateError) throw updateError;
+
+      await writeAudit("amendment_unlocked", {
+        message: "Amendment unlocked.",
+        reason,
+      });
+
+      setMessage("Amendment unlocked.");
+      await loadData();
+    } catch (e: any) {
+      setError(e.message || "Failed to unlock amendment.");
+    } finally {
+      setSaving(false);
     }
+  }
 
-    await updateAmendment(
-      {
-        status: "locked",
-        locked: true,
-        locked_at: new Date().toISOString(),
-        locked_by: userId || null,
-        locked_income: currentTotals.income,
-        locked_expenses: currentTotals.expenses,
-        locked_profit: currentTotals.profit,
-        variance_income: variance.income,
-        variance_expenses: variance.expenses,
-        variance_profit: variance.profit,
-      },
-      "Amendment locked for HMRC submission.",
-      "amendment_locked",
-      "Amendment locked. Locked totals and variance values preserved."
-    );
-  };
+  async function submitHmrcAmendment() {
+    setSaving(true);
+    setError("");
+    setMessage("");
 
-  const unlockAmendment = async () => {
-    if (!canUnlock) {
-      setMessage("Only a locked, unsubmitted amendment can be unlocked.");
-      return;
+    try {
+      if (!isLocked) throw new Error("Lock amendment before HMRC submission.");
+      if (isSubmitted) throw new Error("Duplicate submission blocked.");
+
+      const lockedIncome =
+        pickNumber(amendment, ["locked_amended_income"]) || amendedTotals.income;
+      const lockedExpenses =
+        pickNumber(amendment, ["locked_amended_expenses"]) ||
+        amendedTotals.expenses;
+      const lockedProfit =
+        pickNumber(amendment, ["locked_amended_profit"]) ||
+        lockedIncome - lockedExpenses;
+
+      await writeAudit("amendment_hmrc_submission_started", {
+        message: "HMRC amendment submission started.",
+        lockedTotals: {
+          income: lockedIncome,
+          expenses: lockedExpenses,
+          profit: lockedProfit,
+        },
+      });
+
+      const res = await authenticatedFetch("/api/hmrc/submit-amendment", {
+        method: "POST",
+        body: JSON.stringify({
+          clientId,
+          taxYearId,
+          amendmentId,
+          totals: {
+            income: lockedIncome,
+            expenses: lockedExpenses,
+            profit: lockedProfit,
+          },
+          source: "locked_amendment_ledger",
+        }),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        await writeAudit("amendment_hmrc_submission_failed", {
+          status: "failed",
+          message: json.error || "HMRC amendment submission failed.",
+          response: json,
+        });
+
+        await supabase
+          .from("tax_year_amendments")
+          .update({
+            last_error: json.error || "HMRC amendment submission failed.",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", amendmentId);
+
+        throw new Error(json.error || "HMRC amendment submission failed.");
+      }
+
+      const submittedAt = new Date().toISOString();
+
+      const { error: updateError } = await supabase
+        .from("tax_year_amendments")
+        .update({
+          status: "submitted",
+          submitted_at: submittedAt,
+          submitted_by: user?.id || null,
+          submitted_income: lockedIncome,
+          submitted_expenses: lockedExpenses,
+          submitted_profit: lockedProfit,
+          hmrc_submission_id:
+            json.hmrcSubmissionId ||
+            json.submissionId ||
+            json.internalSubmissionId ||
+            null,
+          hmrc_amendment_id:
+            json.hmrcAmendmentId ||
+            json.amendmentId ||
+            json.internalAmendmentId ||
+            null,
+          hmrc_response: json,
+          last_error: null,
+          updated_at: submittedAt,
+        })
+        .eq("id", amendmentId);
+
+      if (updateError) throw updateError;
+
+      await writeAudit("amendment_hmrc_submitted", {
+        message: "HMRC amendment submitted successfully.",
+        response: json,
+        submittedTotals: {
+          income: lockedIncome,
+          expenses: lockedExpenses,
+          profit: lockedProfit,
+        },
+      });
+
+      setMessage("HMRC amendment submitted successfully.");
+      await loadData();
+    } catch (e: any) {
+      setError(e.message || "Failed to submit HMRC amendment.");
+    } finally {
+      setSaving(false);
     }
-
-    await updateAmendment(
-      {
-        status: "approved",
-        locked: false,
-        unlocked_at: new Date().toISOString(),
-        unlocked_by: userId || null,
-      },
-      "Amendment unlocked.",
-      "amendment_unlocked",
-      "Locked amendment was unlocked before HMRC submission."
-    );
-  };
-
-  const submitToHmrcPlaceholder = async () => {
-    if (!canSubmitToHmrc) {
-      setMessage("Amendment must be locked and unsubmitted before HMRC submission.");
-      return;
-    }
-
-    setMessage(
-      "Next step: add the server-side HMRC amendment submission route. This UI is intentionally blocked until duplicate protection, submission ledger insert, and HMRC evidence preservation are handled server-side."
-    );
-  };
-
-  const openViewer = (log: Row, mode: Exclude<ViewerMode, null>) => {
-    setSelectedLog(log);
-    setViewerMode(mode);
-  };
-
-  const closeViewer = () => {
-    setSelectedLog(null);
-    setViewerMode(null);
-  };
+  }
 
   if (loading) {
     return (
-      <main style={styles.page}>
-        <div style={styles.card}>Loading amendment...</div>
+      <main className="amendment-page">
+        <div className="shell">
+          <div className="loading-card">Loading amendment working paper...</div>
+        </div>
+
+        <style jsx>{styles}</style>
       </main>
     );
   }
 
   return (
-    <main style={styles.page}>
-      <div style={styles.header}>
-        <div>
-          <div style={styles.backLinks}>
+    <main className="amendment-page">
+      <div className="shell">
+        <div className="topbar">
+          <div>
             <Link
               href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/summary`}
-              style={styles.backLink}
+              className="back"
             >
               ← Back to tax year summary
             </Link>
 
-            <Link
-              href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/final-declaration`}
-              style={styles.backLink}
+            <div className="title-row">
+              <div>
+                <h1>Amendment working paper</h1>
+                <p>
+                  {client?.name || client?.client_name || "Client"} ·{" "}
+                  {taxYear?.tax_year || taxYear?.year || "Tax year"} ·{" "}
+                  <span>Amendment {amendmentId.slice(0, 8)}</span>
+                </p>
+              </div>
+
+              <div className="status-wrap">
+                <span className={statusClass(amendment?.status)}>
+                  {amendment?.status || "draft"}
+                </span>
+                {isLocked && <span className="status blue">Locked</span>}
+                {isSubmitted && <span className="status green">Submitted</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {message && <div className="notice success">{message}</div>}
+        {error && <div className="notice danger">{error}</div>}
+
+        <section className="hero-grid">
+          <div className="summary-card dark">
+            <div className="eyebrow">Amended profit</div>
+            <div className="hero-money">{money(amendedTotals.profit)}</div>
+            <p>Calculated from frozen original totals plus active adjustment ledger.</p>
+          </div>
+
+          <div className="summary-card">
+            <div className="eyebrow">Original profit</div>
+            <div className="big-money">{money(originalTotals.profit)}</div>
+            <p>Original final declaration remains preserved.</p>
+          </div>
+
+          <div className="summary-card">
+            <div className="eyebrow">Profit variance</div>
+            <div className="big-money">{money(adjustmentTotals.profit)}</div>
+            <p>Net impact of all active amendment adjustments.</p>
+          </div>
+
+          <div className="summary-card">
+            <div className="eyebrow">Ledger entries</div>
+            <div className="big-money">{activeAdjustments.length}</div>
+            <p>Active working paper adjustments.</p>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>Amendment calculation</h2>
+              <p>Original totals, adjustment totals and amended submission totals.</p>
+            </div>
+          </div>
+
+          <div className="calc-grid">
+            <div className="calc-box">
+              <h3>Original frozen totals</h3>
+              <div className="line">
+                <span>Income</span>
+                <strong>{money(originalTotals.income)}</strong>
+              </div>
+              <div className="line">
+                <span>Expenses</span>
+                <strong>{money(originalTotals.expenses)}</strong>
+              </div>
+              <div className="line total">
+                <span>Profit</span>
+                <strong>{money(originalTotals.profit)}</strong>
+              </div>
+            </div>
+
+            <div className="calc-box">
+              <h3>Adjustment totals</h3>
+              <div className="line">
+                <span>Income movement</span>
+                <strong>{money(adjustmentTotals.income)}</strong>
+              </div>
+              <div className="line">
+                <span>Expense movement</span>
+                <strong>{money(adjustmentTotals.expenses)}</strong>
+              </div>
+              <div className="line total">
+                <span>Profit movement</span>
+                <strong>{money(adjustmentTotals.profit)}</strong>
+              </div>
+            </div>
+
+            <div className="calc-box highlight">
+              <h3>Amended totals</h3>
+              <div className="line">
+                <span>Income</span>
+                <strong>{money(amendedTotals.income)}</strong>
+              </div>
+              <div className="line">
+                <span>Expenses</span>
+                <strong>{money(amendedTotals.expenses)}</strong>
+              </div>
+              <div className="line total">
+                <span>Profit</span>
+                <strong>{money(amendedTotals.profit)}</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="main-grid">
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h2>Add adjustment</h2>
+                <p>Use this as the accountant working paper input area.</p>
+              </div>
+            </div>
+
+            {isLocked && (
+              <div className="notice info">
+                This amendment is locked. Unlock before adding or voiding
+                adjustments.
+              </div>
+            )}
+
+            <div className="form-grid">
+              <label>
+                Type
+                <select
+                  value={form.adjustment_type}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      adjustment_type: e.target.value as "income" | "expense",
+                    })
+                  }
+                  disabled={saving || isLocked}
+                >
+                  <option value="income">Income</option>
+                  <option value="expense">Expense</option>
+                </select>
+              </label>
+
+              <label>
+                Direction
+                <select
+                  value={form.direction}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      direction: e.target.value as "increase" | "decrease",
+                    })
+                  }
+                  disabled={saving || isLocked}
+                >
+                  <option value="increase">Increase</option>
+                  <option value="decrease">Decrease</option>
+                </select>
+              </label>
+
+              <label>
+                Amount
+                <input
+                  value={form.amount}
+                  onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  disabled={saving || isLocked}
+                />
+              </label>
+
+              <label>
+                Category
+                <input
+                  value={form.category}
+                  onChange={(e) => setForm({ ...form, category: e.target.value })}
+                  placeholder="e.g. sales, rent, software"
+                  disabled={saving || isLocked}
+                />
+              </label>
+
+              <label>
+                Optional quarter link
+                <select
+                  value={form.quarter_id}
+                  onChange={(e) =>
+                    setForm({ ...form, quarter_id: e.target.value })
+                  }
+                  disabled={saving || isLocked}
+                >
+                  <option value="">No quarter link</option>
+                  {quarters.map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {quarterLabel(q)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="wide">
+                Description
+                <input
+                  value={form.description}
+                  onChange={(e) =>
+                    setForm({ ...form, description: e.target.value })
+                  }
+                  placeholder="What changed?"
+                  disabled={saving || isLocked}
+                />
+              </label>
+
+              <label className="wide">
+                Reason / working paper note
+                <textarea
+                  value={form.reason}
+                  onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                  placeholder="Why is this amendment required? Include accountant review note."
+                  disabled={saving || isLocked}
+                />
+              </label>
+            </div>
+
+            <button
+              className="primary-btn"
+              onClick={addAdjustment}
+              disabled={saving || isLocked}
             >
-              Back to final declaration
-            </Link>
+              Add adjustment
+            </button>
           </div>
 
-          <h1 style={styles.title}>
-            Amendment #{amendment?.amendment_number || "-"}
-          </h1>
-
-          <p style={styles.subtitle}>
-            Client: <strong>{clientName}</strong> · Tax year:{" "}
-            <strong>{taxYear?.year_label || "Unknown"}</strong>
-          </p>
-
-          <p style={styles.subtitle}>
-            Status:{" "}
-            <strong>{String(amendment?.status || "draft").replaceAll("_", " ")}</strong>{" "}
-            · Lock: <strong>{amendmentLocked ? "Locked" : "Unlocked"}</strong> ·
-            HMRC: <strong>{amendmentSubmitted ? "Submitted" : "Not submitted"}</strong>
-          </p>
-        </div>
-
-        <div style={styles.actions}>
-          <button onClick={loadData} style={styles.secondaryButton}>
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      {message && <div style={styles.message}>{message}</div>}
-
-      <section style={styles.lockBanner}>
-        <h2 style={styles.lockTitle}>Original declaration protected</h2>
-        <p style={styles.lockText}>
-          This amendment is separate from the original Final Declaration. Original
-          HMRC submission ID, correlation ID, request payload and response evidence
-          must remain preserved and must never be overwritten by amendment activity.
-        </p>
-      </section>
-
-      <section style={styles.statsGrid}>
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Original profit</span>
-          <strong style={styles.statValue}>{money(originalTotals.profit)}</strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Current profit</span>
-          <strong style={styles.statValue}>{money(currentTotals.profit)}</strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Profit variance</span>
-          <strong style={variance.profit >= 0 ? styles.passValue : styles.failValue}>
-            {money(variance.profit)}
-          </strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Locked profit</span>
-          <strong style={styles.statValue}>
-            {lockedTotals.profit === null ? "-" : money(lockedTotals.profit)}
-          </strong>
-        </div>
-      </section>
-
-      <section style={styles.twoCol}>
-        <div style={styles.card}>
-          <h2 style={styles.sectionTitle}>Readiness Checks</h2>
-
-          <div style={styles.checkList}>
-            <div style={styles.checkRow}>
-              <span>Original Final Declaration submitted</span>
-              <strong style={originalSubmitted ? styles.passText : styles.failText}>
-                {originalSubmitted ? "Pass" : "Fail"}
-              </strong>
+          <aside className="panel compliance">
+            <h2>Compliance controls</h2>
+            <div className="control-item">
+              <strong>Digital records</strong>
+              <span>CSV transactions remain internal records.</span>
             </div>
-
-            <div style={styles.checkRow}>
-              <span>Amendment reason entered</span>
-              <strong style={hasReason ? styles.passText : styles.failText}>
-                {hasReason ? "Pass" : "Fail"}
-              </strong>
+            <div className="control-item">
+              <strong>HMRC payload</strong>
+              <span>Submission uses locked summary totals only.</span>
             </div>
-
-            <div style={styles.checkRow}>
-              <span>Amendment not already submitted</span>
-              <strong style={!amendmentSubmitted ? styles.passText : styles.failText}>
-                {!amendmentSubmitted ? "Pass" : "Fail"}
-              </strong>
+            <div className="control-item">
+              <strong>Evidence</strong>
+              <span>Original declaration evidence is not overwritten.</span>
             </div>
-
-            <div style={styles.checkRow}>
-              <span>Locked for HMRC submission</span>
-              <strong style={amendmentLocked ? styles.passText : styles.failText}>
-                {amendmentLocked ? "Yes" : "No"}
-              </strong>
+            <div className="control-item">
+              <strong>Duplicate control</strong>
+              <span>Submitted amendments cannot be resubmitted.</span>
             </div>
+            <div className="control-item">
+              <strong>Audit</strong>
+              <span>Every workflow action writes to the evidence ledger.</span>
+            </div>
+          </aside>
+        </section>
 
-            <div style={styles.checkRow}>
-              <span>Variance detected</span>
-              <strong style={hasVariance ? styles.passText : styles.failText}>
-                {hasVariance ? "Yes" : "No"}
-              </strong>
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>Adjustment ledger</h2>
+              <p>Active and voided working paper entries for this amendment.</p>
             </div>
           </div>
-        </div>
 
-        <div style={styles.card}>
-          <h2 style={styles.sectionTitle}>Original HMRC Evidence</h2>
-
-          <div style={styles.checkList}>
-            <div style={styles.checkRow}>
-              <span>Original Final Declaration</span>
-              <strong style={styles.monospace}>
-                {amendment?.original_final_declaration_id || workflow?.id || "-"}
-              </strong>
-            </div>
-
-            <div style={styles.checkRow}>
-              <span>Original Submission ID</span>
-              <strong style={styles.monospace}>
-                {amendment?.original_hmrc_submission_id ||
-                  workflow?.hmrc_submission_id ||
-                  "-"}
-              </strong>
-            </div>
-
-            <div style={styles.checkRow}>
-              <span>Original Correlation ID</span>
-              <strong style={styles.monospace}>
-                {amendment?.original_hmrc_correlation_id ||
-                  workflow?.hmrc_correlation_id ||
-                  "-"}
-              </strong>
-            </div>
-
-            <div style={styles.checkRow}>
-              <span>Original submitted at</span>
-              <strong>
-                {formatDate(
-                  amendment?.original_submitted_at || workflow?.hmrc_submitted_at
-                )}
-              </strong>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Amendment Reason</h2>
-
-        <textarea
-          value={amendment?.reason || ""}
-          disabled={!canEditReason || actionLoading}
-          onChange={(event) =>
-            setAmendment((previous) =>
-              previous ? { ...previous, reason: event.target.value } : previous
-            )
-          }
-          style={styles.textarea}
-          placeholder="Explain why this amendment is required..."
-        />
-
-        <div style={styles.actionsRow}>
-          <button
-            onClick={saveReason}
-            disabled={!canEditReason || actionLoading}
-            style={!canEditReason ? styles.disabledButton : styles.primaryButton}
-          >
-            Save Reason
-          </button>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Amendment Workflow Actions</h2>
-
-        <div style={styles.actionGrid}>
-          <button
-            onClick={submitForReview}
-            disabled={actionLoading || !canSubmitForReview}
-            style={!canSubmitForReview ? styles.disabledButton : styles.blueButton}
-          >
-            Submit for Review
-          </button>
-
-          <button
-            onClick={approveAmendment}
-            disabled={actionLoading || !canApprove}
-            style={!canApprove ? styles.disabledButton : styles.greenButton}
-          >
-            Approve Amendment
-          </button>
-
-          <button
-            onClick={lockAmendment}
-            disabled={actionLoading || !canLock}
-            style={!canLock ? styles.disabledButton : styles.amberButton}
-          >
-            Lock Amendment
-          </button>
-
-          <button
-            onClick={unlockAmendment}
-            disabled={actionLoading || !canUnlock}
-            style={!canUnlock ? styles.disabledButton : styles.slateButton}
-          >
-            Unlock Amendment
-          </button>
-
-          <button
-            onClick={submitToHmrcPlaceholder}
-            disabled={actionLoading || !canSubmitToHmrc}
-            style={!canSubmitToHmrc ? styles.disabledButton : styles.purpleButton}
-          >
-            Submit Amendment to HMRC
-          </button>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Original vs Current Position</h2>
-
-        <div style={styles.tableWrap}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Measure</th>
-                <th style={styles.th}>Original snapshot</th>
-                <th style={styles.th}>Current records</th>
-                <th style={styles.th}>Variance</th>
-                <th style={styles.th}>Locked value</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              <tr>
-                <td style={styles.td}>Income</td>
-                <td style={styles.td}>{money(originalTotals.income)}</td>
-                <td style={styles.td}>{money(currentTotals.income)}</td>
-                <td style={styles.td}>
-                  <strong>{money(variance.income)}</strong>
-                </td>
-                <td style={styles.td}>
-                  {lockedTotals.income === null ? "-" : money(lockedTotals.income)}
-                </td>
-              </tr>
-
-              <tr>
-                <td style={styles.td}>Expenses</td>
-                <td style={styles.td}>{money(originalTotals.expenses)}</td>
-                <td style={styles.td}>{money(currentTotals.expenses)}</td>
-                <td style={styles.td}>
-                  <strong>{money(variance.expenses)}</strong>
-                </td>
-                <td style={styles.td}>
-                  {lockedTotals.expenses === null
-                    ? "-"
-                    : money(lockedTotals.expenses)}
-                </td>
-              </tr>
-
-              <tr>
-                <td style={styles.td}>Profit</td>
-                <td style={styles.td}>{money(originalTotals.profit)}</td>
-                <td style={styles.td}>{money(currentTotals.profit)}</td>
-                <td style={styles.td}>
-                  <strong>{money(variance.profit)}</strong>
-                </td>
-                <td style={styles.td}>
-                  {lockedTotals.profit === null ? "-" : money(lockedTotals.profit)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Amendment Submission Ledger</h2>
-
-        {submissionLogs.length === 0 ? (
-          <p style={styles.muted}>No HMRC amendment submission logs yet.</p>
-        ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
+          <div className="table-wrap">
+            <table>
               <thead>
                 <tr>
-                  <th style={styles.th}>Created</th>
-                  <th style={styles.th}>Status</th>
-                  <th style={styles.th}>HTTP</th>
-                  <th style={styles.th}>Submission ID</th>
-                  <th style={styles.th}>Correlation ID</th>
-                  <th style={styles.th}>Evidence</th>
+                  <th>Date</th>
+                  <th>Type</th>
+                  <th>Direction</th>
+                  <th>Category</th>
+                  <th>Amount</th>
+                  <th>Description</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Action</th>
                 </tr>
               </thead>
 
               <tbody>
-                {submissionLogs.map((log) => (
-                  <tr key={log.id}>
-                    <td style={styles.td}>{formatDate(log.created_at)}</td>
-                    <td style={styles.td}>
-                      <span style={styles.badge}>{log.status || "unknown"}</span>
-                    </td>
-                    <td style={styles.td}>{log.http_status || "-"}</td>
-                    <td style={styles.td}>
-                      <span style={styles.monospace}>
-                        {log.hmrc_submission_id || "-"}
-                      </span>
-                    </td>
-                    <td style={styles.td}>
-                      <span style={styles.monospace}>
-                        {log.hmrc_correlation_id || "-"}
-                      </span>
-                    </td>
-                    <td style={styles.td}>
-                      <div style={styles.rowActions}>
-                        <button
-                          type="button"
-                          onClick={() => openViewer(log, "request")}
-                          style={styles.smallButton}
-                        >
-                          Request
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => openViewer(log, "response")}
-                          style={styles.smallButton}
-                        >
-                          Response
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => openViewer(log, "headers")}
-                          style={styles.smallButton}
-                        >
-                          Headers
-                        </button>
-                      </div>
+                {adjustments.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="empty">
+                      No adjustment entries yet.
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  adjustments.map((row) => (
+                    <tr key={row.id}>
+                      <td>{formatDate(row.created_at)}</td>
+                      <td>{row.adjustment_type}</td>
+                      <td>{row.direction}</td>
+                      <td>{row.category || "-"}</td>
+                      <td>
+                        <strong>{money(row.amount)}</strong>
+                      </td>
+                      <td>{row.description}</td>
+                      <td>{row.reason}</td>
+                      <td>
+                        <span
+                          className={
+                            row.status === "void"
+                              ? "mini-status red"
+                              : "mini-status green"
+                          }
+                        >
+                          {row.status}
+                        </span>
+                      </td>
+                      <td>
+                        {row.status !== "void" && !isLocked ? (
+                          <button
+                            className="ghost danger-text"
+                            onClick={() => voidAdjustment(row)}
+                            disabled={saving}
+                          >
+                            Void
+                          </button>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
-        )}
-      </section>
+        </section>
 
-      {selectedLog && viewerMode && (
-        <section style={styles.card}>
-          <div style={styles.jsonHeader}>
-            <div>
-              <h2 style={styles.sectionTitle}>{viewerTitle}</h2>
-              <p style={styles.muted}>
-                Log created: {formatDate(selectedLog.created_at)} · Status:{" "}
-                {selectedLog.status || "Unknown"} · HTTP:{" "}
-                {selectedLog.http_status || "-"}
-              </p>
-            </div>
+        <section className="workflow">
+          <div>
+            <h2>Workflow actions</h2>
+            <p>
+              Review, approve, lock and submit the amendment using controlled
+              accountant workflow steps.
+            </p>
+          </div>
 
-            <button type="button" onClick={closeViewer} style={styles.secondaryButton}>
-              Close viewer
+          <div className="action-row">
+            <button
+              onClick={submitForReview}
+              disabled={saving || isSubmitted}
+              className="secondary-btn"
+            >
+              Submit for review
+            </button>
+
+            <button
+              onClick={approveAmendment}
+              disabled={saving || isSubmitted}
+              className="secondary-btn"
+            >
+              Approve
+            </button>
+
+            <button
+              onClick={lockAmendment}
+              disabled={saving || isLocked || isSubmitted}
+              className="blue-btn"
+            >
+              Lock amendment
+            </button>
+
+            <button
+              onClick={unlockAmendment}
+              disabled={saving || !isLocked || isSubmitted}
+              className="secondary-btn"
+            >
+              Unlock
+            </button>
+
+            <button
+              onClick={submitHmrcAmendment}
+              disabled={saving || !isLocked || isSubmitted}
+              className="green-btn"
+            >
+              Submit HMRC amendment
             </button>
           </div>
-
-          <pre style={styles.jsonBox}>{formatJson(viewerData)}</pre>
         </section>
-      )}
 
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Amendment Audit Trail</h2>
-
-        {auditTrail.length === 0 ? (
-          <p style={styles.muted}>No amendment audit events yet.</p>
-        ) : (
-          <div style={styles.auditList}>
-            {auditTrail.map((item) => (
-              <div key={item.id} style={styles.auditCard}>
-                <div>
-                  <strong>{String(item.action || "").replaceAll("_", " ")}</strong>
-                  <p style={styles.muted}>{item.notes || "-"}</p>
-                </div>
-
-                <span style={styles.auditTime}>{formatDate(item.created_at)}</span>
-              </div>
-            ))}
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>Evidence ledger</h2>
+              <p>Audit trail filtered by amendment ID.</p>
+            </div>
           </div>
-        )}
-      </section>
 
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Quarter Data Reference</h2>
+          <div className="timeline">
+            {auditTrail.length === 0 ? (
+              <div className="empty-card">
+                No audit entries found for this amendment.
+              </div>
+            ) : (
+              auditTrail.map((row) => (
+                <div className="timeline-item" key={row.id}>
+                  <div className="dot" />
+                  <div>
+                    <div className="timeline-title">
+                      <strong>{row.action || row.event || "Audit event"}</strong>
+                      <span>{formatDate(row.created_at)}</span>
+                    </div>
+                    <p>{row.message || row.meta?.message || "-"}</p>
+                    <span className={statusClass(row.status)}>
+                      {row.status || "success"}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      </div>
 
-        <p style={styles.muted}>
-          Current records are used only to calculate the amendment variance.
-          Original HMRC submission evidence remains separate. Once the amendment
-          is locked, the locked totals above become the submission basis.
-        </p>
-
-        <div style={styles.tableWrap}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Quarter</th>
-                <th style={styles.th}>Period</th>
-                <th style={styles.th}>Status</th>
-                <th style={styles.th}>Income</th>
-                <th style={styles.th}>Expenses</th>
-                <th style={styles.th}>Profit</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {quarters.map((quarter) => {
-                const income = getAmount(quarter, [
-                  "income",
-                  "income_total",
-                  "total_income",
-                  "turnover",
-                  "sales",
-                  "gross_income",
-                ]);
-
-                const expenses = getAmount(quarter, [
-                  "expenses",
-                  "expense_total",
-                  "total_expenses",
-                  "allowable_expenses",
-                ]);
-
-                return (
-                  <tr key={quarter.id}>
-                    <td style={styles.td}>
-                      <strong>{quarter.quarter_name || "Quarter"}</strong>
-                    </td>
-                    <td style={styles.td}>
-                      {quarter.start_date || "?"} to {quarter.end_date || "?"}
-                    </td>
-                    <td style={styles.td}>
-                      <span style={styles.badge}>
-                        {quarter.status || "not_started"}
-                      </span>
-                    </td>
-                    <td style={styles.td}>{money(income)}</td>
-                    <td style={styles.td}>{money(expenses)}</td>
-                    <td style={styles.td}>
-                      <strong>{money(income - expenses)}</strong>
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {quarters.length === 0 && (
-                <tr>
-                  <td style={styles.td} colSpan={6}>
-                    No quarters found.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <style jsx>{styles}</style>
     </main>
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    minHeight: "100vh",
-    background: "#f6f8fb",
-    padding: "32px",
-    fontFamily:
-      "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
-    color: "#111827",
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "24px",
-    alignItems: "flex-start",
-    marginBottom: "24px",
-  },
-  backLinks: {
-    display: "flex",
-    gap: "14px",
-    flexWrap: "wrap",
-  },
-  backLink: {
-    color: "#2563eb",
-    textDecoration: "none",
-    fontSize: "14px",
-    fontWeight: 700,
-  },
-  title: {
-    margin: "10px 0 8px",
-    fontSize: "34px",
-    lineHeight: 1.1,
-    fontWeight: 900,
-  },
-  subtitle: {
-    margin: "4px 0",
-    color: "#64748b",
-    fontSize: "15px",
-  },
-  actions: {
-    display: "flex",
-    gap: "12px",
-    flexWrap: "wrap",
-  },
-  actionsRow: {
-    display: "flex",
-    gap: "12px",
-    flexWrap: "wrap",
-    marginTop: "14px",
-  },
-  primaryButton: {
-    border: "none",
-    background: "#111827",
-    color: "white",
-    padding: "12px 18px",
-    borderRadius: "12px",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  secondaryButton: {
-    border: "1px solid #cbd5e1",
-    background: "white",
-    color: "#111827",
-    padding: "12px 18px",
-    borderRadius: "12px",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  disabledButton: {
-    border: "1px solid #d1d5db",
-    background: "#e5e7eb",
-    color: "#6b7280",
-    padding: "12px 18px",
-    borderRadius: "12px",
-    fontWeight: 900,
-    cursor: "not-allowed",
-  },
-  smallButton: {
-    border: "1px solid #cbd5e1",
-    background: "white",
-    color: "#111827",
-    padding: "7px 10px",
-    borderRadius: "10px",
-    fontWeight: 800,
-    cursor: "pointer",
-    fontSize: "12px",
-  },
-  message: {
-    background: "#eef6ff",
-    border: "1px solid #bfdbfe",
-    color: "#1e3a8a",
-    padding: "14px 16px",
-    borderRadius: "14px",
-    marginBottom: "20px",
-    fontWeight: 700,
-  },
-  lockBanner: {
-    background: "#fffbeb",
-    border: "1px solid #f59e0b",
-    color: "#78350f",
-    padding: "20px",
-    borderRadius: "18px",
-    marginBottom: "20px",
-    boxShadow: "0 10px 25px rgba(146, 64, 14, 0.08)",
-  },
-  lockTitle: {
-    margin: "0 0 8px",
-    fontSize: "22px",
-    fontWeight: 900,
-  },
-  lockText: {
-    margin: 0,
-    fontSize: "15px",
-    lineHeight: 1.6,
-    fontWeight: 700,
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-    gap: "16px",
-    marginBottom: "20px",
-  },
-  statCard: {
-    background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: "18px",
-    padding: "20px",
-    boxShadow: "0 10px 25px rgba(15, 23, 42, 0.06)",
-  },
-  statLabel: {
-    display: "block",
-    color: "#64748b",
-    fontSize: "13px",
-    fontWeight: 800,
-    marginBottom: "8px",
-    textTransform: "uppercase",
-    letterSpacing: "0.04em",
-  },
-  statValue: {
-    fontSize: "24px",
-    fontWeight: 900,
-  },
-  passValue: {
-    fontSize: "24px",
-    fontWeight: 900,
-    color: "#15803d",
-  },
-  failValue: {
-    fontSize: "24px",
-    fontWeight: 900,
-    color: "#b91c1c",
-  },
-  passText: {
-    color: "#15803d",
-    fontWeight: 900,
-  },
-  failText: {
-    color: "#b91c1c",
-    fontWeight: 900,
-  },
-  twoCol: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: "20px",
-    marginBottom: "20px",
-  },
-  card: {
-    background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: "20px",
-    padding: "24px",
-    boxShadow: "0 10px 25px rgba(15, 23, 42, 0.06)",
-    marginBottom: "20px",
-  },
-  sectionTitle: {
-    margin: "0 0 18px",
-    fontSize: "22px",
-    fontWeight: 900,
-  },
-  muted: {
-    margin: "0 0 16px",
-    color: "#64748b",
-    fontSize: "14px",
-  },
-  textarea: {
-    width: "100%",
-    minHeight: "150px",
-    border: "1px solid #cbd5e1",
-    borderRadius: "14px",
-    padding: "14px",
-    fontSize: "14px",
-    outline: "none",
-    resize: "vertical",
-  },
-  checkList: {
-    display: "grid",
-    gap: "12px",
-  },
-  checkRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "18px",
-    borderBottom: "1px solid #e5e7eb",
-    paddingBottom: "10px",
-  },
-  actionGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-    gap: "12px",
-  },
-  blueButton: {
-    border: "none",
-    background: "#2563eb",
-    color: "white",
-    padding: "12px",
-    borderRadius: "12px",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  greenButton: {
-    border: "none",
-    background: "#16a34a",
-    color: "white",
-    padding: "12px",
-    borderRadius: "12px",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  amberButton: {
-    border: "none",
-    background: "#b45309",
-    color: "white",
-    padding: "12px",
-    borderRadius: "12px",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  slateButton: {
-    border: "none",
-    background: "#475569",
-    color: "white",
-    padding: "12px",
-    borderRadius: "12px",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  purpleButton: {
-    border: "none",
-    background: "#7e22ce",
-    color: "white",
-    padding: "12px",
-    borderRadius: "12px",
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  tableWrap: {
-    overflowX: "auto",
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    fontSize: "14px",
-  },
-  th: {
-    textAlign: "left",
-    padding: "12px",
-    color: "#64748b",
-    borderBottom: "1px solid #e5e7eb",
-    fontWeight: 800,
-    whiteSpace: "nowrap",
-  },
-  td: {
-    padding: "12px",
-    borderBottom: "1px solid #e5e7eb",
-    whiteSpace: "nowrap",
-  },
-  badge: {
-    display: "inline-flex",
-    padding: "5px 9px",
-    borderRadius: "999px",
-    background: "#eef2ff",
-    color: "#3730a3",
-    fontWeight: 800,
-    fontSize: "12px",
-  },
-  rowActions: {
-    display: "flex",
-    gap: "8px",
-    flexWrap: "wrap",
-  },
-  jsonHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "16px",
-    alignItems: "flex-start",
-    marginBottom: "14px",
-  },
-  jsonBox: {
-    margin: 0,
-    background: "#0f172a",
-    color: "#e5e7eb",
-    padding: "18px",
-    borderRadius: "14px",
-    overflowX: "auto",
-    maxHeight: "520px",
-    fontSize: "13px",
-    lineHeight: 1.5,
-  },
-  auditList: {
-    display: "grid",
-    gap: "12px",
-  },
-  auditCard: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "16px",
-    border: "1px solid #e5e7eb",
-    borderRadius: "14px",
-    padding: "14px",
-    background: "#fbfdff",
-  },
-  auditTime: {
-    color: "#64748b",
-    fontSize: "13px",
-    whiteSpace: "nowrap",
-  },
-  monospace: {
-    fontFamily:
-      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-    fontSize: "12px",
-    overflowWrap: "anywhere",
-  },
-};
+const styles = `
+.amendment-page {
+  min-height: 100vh;
+  background: #f5f7fb;
+  color: #111827;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.shell {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 28px;
+}
+
+.back {
+  display: inline-flex;
+  color: #2563eb;
+  font-size: 14px;
+  text-decoration: none;
+  margin-bottom: 14px;
+}
+
+.back:hover {
+  text-decoration: underline;
+}
+
+.title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+h1 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+}
+
+h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+h3 {
+  margin: 0 0 16px;
+  font-size: 15px;
+}
+
+p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.status-wrap {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.status,
+.mini-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.status {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.mini-status {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.green {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.blue {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.purple {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.amber {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.red {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.grey {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.notice {
+  border-radius: 16px;
+  padding: 14px 16px;
+  font-size: 14px;
+  margin-top: 18px;
+  border: 1px solid;
+}
+
+.success {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+
+.danger {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.info {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  margin-bottom: 18px;
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1fr;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.summary-card,
+.panel,
+.workflow,
+.loading-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 24px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.summary-card {
+  padding: 22px;
+}
+
+.summary-card.dark {
+  background: linear-gradient(135deg, #111827, #1e293b);
+  color: #ffffff;
+  border-color: #111827;
+}
+
+.summary-card.dark p,
+.summary-card.dark .eyebrow {
+  color: #cbd5e1;
+}
+
+.eyebrow {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.hero-money {
+  margin-top: 12px;
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.big-money {
+  margin-top: 12px;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.panel,
+.workflow,
+.loading-card {
+  padding: 24px;
+  margin-top: 18px;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.calc-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.calc-box {
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.calc-box.highlight {
+  background: #ecfdf5;
+  border-color: #bbf7d0;
+}
+
+.line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 14px;
+}
+
+.line.total {
+  border-bottom: 0;
+  font-size: 15px;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) 380px;
+  gap: 18px;
+  align-items: start;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+label.wide {
+  grid-column: 1 / -1;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #111827;
+  border-radius: 14px;
+  padding: 12px 13px;
+  font-size: 14px;
+  outline: none;
+}
+
+textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled,
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.primary-btn,
+.secondary-btn,
+.blue-btn,
+.green-btn,
+.ghost {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 16px;
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.primary-btn {
+  margin-top: 16px;
+  background: #111827;
+  color: #ffffff;
+}
+
+.secondary-btn {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #111827;
+}
+
+.blue-btn {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.green-btn {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.ghost {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+}
+
+.danger-text {
+  color: #b91c1c;
+}
+
+.compliance {
+  position: sticky;
+  top: 16px;
+}
+
+.control-item {
+  padding: 14px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.control-item:last-child {
+  border-bottom: 0;
+}
+
+.control-item strong {
+  display: block;
+  font-size: 14px;
+}
+
+.control-item span {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+}
+
+table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th {
+  background: #f8fafc;
+  color: #475569;
+  text-align: left;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+th,
+td {
+  padding: 14px;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+.empty,
+.empty-card {
+  color: #64748b;
+  text-align: center;
+  padding: 28px;
+}
+
+.workflow {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: center;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.timeline {
+  display: grid;
+  gap: 14px;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 14px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.timeline-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.timeline-title span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+@media (max-width: 1050px) {
+  .hero-grid,
+  .calc-grid,
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow,
+  .title-row {
+    flex-direction: column;
+  }
+
+  .action-row,
+  .status-wrap {
+    justify-content: flex-start;
+  }
+
+  .compliance {
+    position: static;
+  }
+}
+
+@media (max-width: 680px) {
+  .shell {
+    padding: 18px;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  h1 {
+    font-size: 24px;
+  }
+
+  .hero-money {
+    font-size: 30px;
+  }
+}
+`;
