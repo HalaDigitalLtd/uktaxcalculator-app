@@ -1,12 +1,14 @@
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { NextRequest, NextResponse } from "next/server";
+import { supabaseAdmin } from "../../../../../lib/supabaseAdmin";
+import {
+  RbacError,
+  getAuthenticatedUserFromRequest,
+  requireFirmPermission,
+  rbacErrorResponse,
+  type Permission,
+} from "../../../../../lib/rbac";
 
 export const dynamic = "force-dynamic";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
 
 type Action =
   | "initialise"
@@ -77,9 +79,7 @@ function buildReadinessChecks(input: {
 
   const checks = {
     hasAnnualTotals: input.annualIncome > 0 || input.annualExpenses > 0,
-
     hasQuarterlyData: quarters.length > 0,
-
     allQuartersPrepared:
       quarters.length > 0 &&
       quarters.every((q: any) =>
@@ -91,11 +91,8 @@ function buildReadinessChecks(input: {
           "ready_to_submit",
         ].includes(normaliseStatus(q.status))
       ),
-
     accountantApproved: Boolean(input.approved),
-
     lockedForSubmission: Boolean(input.locked),
-
     notAlreadySubmitted: !input.submitted,
   };
 
@@ -115,24 +112,63 @@ function compatibilityWorkflow(row: any, readiness: any, totals: any) {
 
   return {
     ...row,
-
     annual_income: totals.annualIncome,
     annual_expenses: totals.annualExpenses,
     annual_profit: totals.annualProfit,
-
     accountant_approved: Boolean(row.approved),
     is_locked: Boolean(row.locked),
     ready_to_submit: readiness.readyToSubmit,
     readiness_checks: readiness.checks,
-
     hmrc_final_submission_id:
       row.hmrc_submission_id || row.hmrc_final_submission_id || null,
-
     final_submitted_at:
       row.hmrc_submitted_at || row.submitted_at || row.final_submitted_at || null,
-
     canonical_table: "tax_year_final_declarations",
     deprecated_legacy_table: "final_declaration_workflows",
+  };
+}
+
+function permissionForAction(action: Action): Permission {
+  if (action === "approve") return "workflow:approve";
+  if (action === "unapprove") return "workflow:reject";
+  if (action === "lock") return "workflow:lock";
+  if (action === "unlock") return "workflow:unlock";
+  if (action === "mark_submitting") return "hmrc:submit_final";
+  if (action === "mark_submitted") return "hmrc:submit_final";
+  if (action === "mark_failed") return "hmrc:submit_final";
+  return "quarter:prepare";
+}
+
+async function loadClientAndTaxYear(clientId: string, taxYearId: string) {
+  const { data: taxYear, error: taxYearError } = await supabaseAdmin
+    .from("tax_years")
+    .select("id, client_id")
+    .eq("id", taxYearId)
+    .eq("client_id", clientId)
+    .maybeSingle();
+
+  if (taxYearError) throw new Error(taxYearError.message);
+
+  if (!taxYear) {
+    throw new RbacError("Tax year not found for this client.", 404);
+  }
+
+  const { data: client, error: clientError } = await supabaseAdmin
+    .from("clients")
+    .select("id, firm_id")
+    .eq("id", clientId)
+    .maybeSingle();
+
+  if (clientError) throw new Error(clientError.message);
+
+  if (!client?.firm_id) {
+    throw new RbacError("Client or firm not found.", 404);
+  }
+
+  return {
+    client,
+    taxYear,
+    firmId: client.firm_id as string,
   };
 }
 
@@ -181,6 +217,9 @@ async function saveCanonicalWorkflow(params: {
       .from("tax_year_final_declarations")
       .update(basePayload)
       .eq("id", params.existingWorkflow.id)
+      .eq("firm_id", params.firmId)
+      .eq("client_id", params.clientId)
+      .eq("tax_year_id", params.taxYearId)
       .select("*")
       .single();
 
@@ -233,8 +272,9 @@ async function insertAudit(params: {
   }
 }
 
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
   try {
+    const user = await getAuthenticatedUserFromRequest(req);
     const { searchParams } = new URL(req.url);
 
     const clientId = searchParams.get("clientId");
@@ -246,6 +286,14 @@ export async function GET(req: Request) {
         { status: 400 }
       );
     }
+
+    const { firmId } = await loadClientAndTaxYear(clientId, taxYearId);
+
+    const role = await requireFirmPermission({
+      userId: user.id,
+      firmId,
+      permission: "quarter:prepare",
+    });
 
     const [workflow, quarters] = await Promise.all([
       loadCanonicalWorkflow(clientId, taxYearId),
@@ -270,6 +318,7 @@ export async function GET(req: Request) {
         .from("final_declaration_audit_trail")
         .select("*")
         .eq("workflow_id", workflow.id)
+        .eq("firm_id", firmId)
         .order("created_at", { ascending: false });
 
       if (error) throw new Error(error.message);
@@ -284,8 +333,12 @@ export async function GET(req: Request) {
       auditTrail,
       readinessChecks: readiness.checks,
       readyToSubmit: readiness.readyToSubmit,
+      userFirmRole: role,
+      firmId,
     });
   } catch (err: any) {
+    if (err instanceof RbacError) return rbacErrorResponse(err) as Response;
+
     return NextResponse.json(
       {
         success: false,
@@ -296,22 +349,51 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
+    const user = await getAuthenticatedUserFromRequest(req);
     const body = await req.json();
 
     const action = body.action as Action;
-    const firmId = body.firmId;
     const clientId = body.clientId;
     const taxYearId = body.taxYearId;
-    const userId = body.userId || null;
 
-    if (!action || !firmId || !clientId || !taxYearId) {
+    if (!action || !clientId || !taxYearId) {
       return NextResponse.json(
         { success: false, error: "Missing required fields." },
         { status: 400 }
       );
     }
+
+    const allowedActions: Action[] = [
+      "initialise",
+      "refresh_checks",
+      "submit_for_review",
+      "approve",
+      "unapprove",
+      "lock",
+      "unlock",
+      "mark_submitting",
+      "mark_submitted",
+      "mark_failed",
+    ];
+
+    if (!allowedActions.includes(action)) {
+      return NextResponse.json(
+        { success: false, error: "Invalid workflow action." },
+        { status: 400 }
+      );
+    }
+
+    const { firmId } = await loadClientAndTaxYear(clientId, taxYearId);
+
+    const requiredPermission = permissionForAction(action);
+
+    const role = await requireFirmPermission({
+      userId: user.id,
+      firmId,
+      permission: requiredPermission,
+    });
 
     const [existingWorkflow, quarters] = await Promise.all([
       loadCanonicalWorkflow(clientId, taxYearId),
@@ -378,7 +460,10 @@ export async function POST(req: Request) {
     if (action === "lock") {
       if (!currentApproved && !nextApproved) {
         return NextResponse.json(
-          { success: false, error: "Accountant approval is required before locking." },
+          {
+            success: false,
+            error: "Accountant approval is required before locking.",
+          },
           { status: 400 }
         );
       }
@@ -398,14 +483,20 @@ export async function POST(req: Request) {
     if (action === "mark_submitting") {
       if (!currentApproved) {
         return NextResponse.json(
-          { success: false, error: "Final declaration is not accountant approved." },
+          {
+            success: false,
+            error: "Final declaration is not accountant approved.",
+          },
           { status: 400 }
         );
       }
 
       if (!currentLocked) {
         return NextResponse.json(
-          { success: false, error: "Final declaration must be locked before submission." },
+          {
+            success: false,
+            error: "Final declaration must be locked before submission.",
+          },
           { status: 400 }
         );
       }
@@ -440,11 +531,15 @@ export async function POST(req: Request) {
     });
 
     if (action === "submit_for_review") {
-      if (!readiness.checks.hasAnnualTotals || !readiness.checks.allQuartersPrepared) {
+      if (
+        !readiness.checks.hasAnnualTotals ||
+        !readiness.checks.allQuartersPrepared
+      ) {
         return NextResponse.json(
           {
             success: false,
-            error: "Annual totals and all prepared quarters are required before review.",
+            error:
+              "Annual totals and all prepared quarters are required before review.",
             readinessChecks: readiness.checks,
           },
           { status: 400 }
@@ -453,11 +548,15 @@ export async function POST(req: Request) {
     }
 
     if (action === "approve") {
-      if (!readiness.checks.hasAnnualTotals || !readiness.checks.allQuartersPrepared) {
+      if (
+        !readiness.checks.hasAnnualTotals ||
+        !readiness.checks.allQuartersPrepared
+      ) {
         return NextResponse.json(
           {
             success: false,
-            error: "Cannot approve until annual totals exist and all quarters are prepared.",
+            error:
+              "Cannot approve until annual totals exist and all quarters are prepared.",
             readinessChecks: readiness.checks,
           },
           { status: 400 }
@@ -466,11 +565,15 @@ export async function POST(req: Request) {
     }
 
     if (action === "lock") {
-      if (!readiness.checks.hasAnnualTotals || !readiness.checks.allQuartersPrepared) {
+      if (
+        !readiness.checks.hasAnnualTotals ||
+        !readiness.checks.allQuartersPrepared
+      ) {
         return NextResponse.json(
           {
             success: false,
-            error: "Cannot lock until annual totals exist and all quarters are prepared.",
+            error:
+              "Cannot lock until annual totals exist and all quarters are prepared.",
             readinessChecks: readiness.checks,
           },
           { status: 400 }
@@ -523,11 +626,15 @@ export async function POST(req: Request) {
         hmrcCorrelationId: body.hmrcCorrelationId || null,
         hmrcCalculationId: body.hmrcCalculationId || null,
         error: body.error || null,
+        actorUserId: user.id,
+        actorEmail: user.email || null,
+        actorFirmRole: role,
+        serverResolvedFirmId: firmId,
         canonicalTable: "tax_year_final_declarations",
         deprecatedLegacyTable: "final_declaration_workflows",
         createdFromRoute: "app/api/mtd/final-declaration/workflow/route.ts",
       },
-      createdBy: userId,
+      createdBy: user.id,
     });
 
     return NextResponse.json({
@@ -536,8 +643,12 @@ export async function POST(req: Request) {
       canonicalWorkflow: savedWorkflow,
       readinessChecks: readiness.checks,
       readyToSubmit: readiness.readyToSubmit,
+      userFirmRole: role,
+      firmId,
     });
   } catch (err: any) {
+    if (err instanceof RbacError) return rbacErrorResponse(err) as Response;
+
     return NextResponse.json(
       {
         success: false,

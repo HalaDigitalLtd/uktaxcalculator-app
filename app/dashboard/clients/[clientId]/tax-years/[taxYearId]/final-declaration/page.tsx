@@ -223,15 +223,25 @@ export default function FinalDeclarationPage() {
   }, [amendments]);
 
   const loadWorkflowFromApi = async () => {
-    const response = await fetch(
-      `/api/mtd/final-declaration/workflow?clientId=${encodeURIComponent(
-        clientId
-      )}&taxYearId=${encodeURIComponent(taxYearId)}`,
-      {
-        method: "GET",
-        cache: "no-store",
-      }
-    );
+    const { data: sessionData } = await supabase.auth.getSession();
+const accessToken = sessionData.session?.access_token;
+
+if (!accessToken) {
+  throw new Error("Login session expired. Please login again.");
+}
+
+const response = await fetch(
+  `/api/mtd/final-declaration/workflow?clientId=${encodeURIComponent(
+    clientId
+  )}&taxYearId=${encodeURIComponent(taxYearId)}`,
+  {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  }
+);
 
     const result = await response.json();
 
@@ -345,20 +355,26 @@ export default function FinalDeclarationPage() {
       throw new Error("Client or tax year not loaded.");
     }
 
-    const response = await fetch("/api/mtd/final-declaration/workflow", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        action,
-        firmId: client.firm_id,
-        clientId,
-        taxYearId,
-        userId,
-        notes: notes || null,
-      }),
-    });
+    const { data: sessionData } = await supabase.auth.getSession();
+const accessToken = sessionData.session?.access_token;
+
+if (!accessToken) {
+  throw new Error("Login session expired. Please login again.");
+}
+
+const response = await fetch("/api/mtd/final-declaration/workflow", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${accessToken}`,
+  },
+  body: JSON.stringify({
+    action,
+    clientId,
+    taxYearId,
+    notes: notes || null,
+  }),
+});
 
     const result = await response.json();
 
