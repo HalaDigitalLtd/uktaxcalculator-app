@@ -227,7 +227,8 @@ export default function FinalDeclarationPage() {
       from_status: previous.status || null,
       to_status: next.status || null,
       notes,
-      metadata: {
+            meta: {
+        workflow_id: next.id || null,
         review_state_before: previous.reviewState || null,
         review_state_after: next.reviewState || null,
         approved_before: previous.approved || false,
@@ -236,6 +237,15 @@ export default function FinalDeclarationPage() {
         locked_after: next.locked || false,
         submitted_before: previous.submitted || false,
         submitted_after: next.submitted || false,
+        hmrc_submission_id: next.hmrcSubmissionId || null,
+        hmrc_correlation_id: next.hmrcCorrelationId || null,
+        hmrc_calculation_id: next.hmrcCalculationId || null,
+        annual_income: totals.income,
+        annual_expenses: totals.expenses,
+        annual_profit: totals.profit,
+        quarter_count: quarters.length,
+        prepared_quarter_count: preparedCount,
+        created_from_page: "final_declaration_page",
       },
       created_by: userId || null,
     };

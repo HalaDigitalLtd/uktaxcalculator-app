@@ -67,6 +67,34 @@ function buildEndpoint(template: string, params: { nino: string; taxYear: string
     .replaceAll(":taxYear", params.taxYear);
 }
 
+async function insertFinalDeclarationAudit(input: {
+  firmId: string;
+  clientId: string;
+  taxYearId: string;
+  action: string;
+  fromStatus: string | null;
+  toStatus: string;
+  notes: string;
+  createdBy: string;
+  meta?: any;
+}) {
+  const { error } = await supabaseAdmin.from("final_declaration_audit_trail").insert({
+    firm_id: input.firmId,
+    client_id: input.clientId,
+    tax_year_id: input.taxYearId,
+    action: input.action,
+    from_status: input.fromStatus,
+    to_status: input.toStatus,
+    notes: input.notes,
+    created_by: input.createdBy,
+    meta: input.meta || {},
+  } as any);
+
+  if (error) {
+    console.error("Final declaration audit insert failed:", error.message);
+  }
+}
+
 export async function POST(req: NextRequest) {
   const now = new Date().toISOString();
 
@@ -109,6 +137,7 @@ export async function POST(req: NextRequest) {
       .eq("tax_year_id", taxYear.id)
       .maybeSingle();
 
+    const fromStatus = finalDeclaration?.status || "not_started";
     const currentRetryCount = Number(finalDeclaration?.retry_count || 0);
     const nextRetryCount = currentRetryCount + (retryMode ? 1 : 0);
     const attemptNumber = retryMode ? nextRetryCount + 1 : 1;
@@ -139,8 +168,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "All quarters must be prepared before final declaration submission.",
+          error: "All quarters must be prepared before final declaration submission.",
           quarterCount: safeQuarters.length,
           preparedCount: preparedQuarters.length,
         },
@@ -327,6 +355,33 @@ export async function POST(req: NextRequest) {
           .eq("client_id", client.id)
           .eq("tax_year_id", taxYear.id);
 
+        await insertFinalDeclarationAudit({
+          firmId: client.firm_id,
+          clientId: client.id,
+          taxYearId: taxYear.id,
+          action: "submit_final_declaration_failed",
+          fromStatus,
+          toStatus: "submission_failed",
+          notes: `Final declaration submission failed. Mode: ${mode}. Correlation ID: ${
+            hmrcCorrelationId || "N/A"
+          }`,
+          createdBy: user.id,
+          meta: {
+            mode,
+            retryMode,
+            retryOfLogId,
+            attemptNumber,
+            hmrcStatus,
+            hmrcSubmissionId,
+            hmrcCorrelationId,
+            hmrcCalculationId,
+            errorCode,
+            errorMessage:
+              errorMessage || errorCode || "HMRC final declaration failed",
+            annualTotals: finalPayload.annualTotals,
+          },
+        });
+
         return NextResponse.json(
           {
             success: false,
@@ -429,16 +484,32 @@ export async function POST(req: NextRequest) {
       created_by: user.id,
     } as any);
 
-    await supabaseAdmin.from("final_declaration_audit_trail").insert({
-      firm_id: client.firm_id,
-      client_id: client.id,
-      tax_year_id: taxYear.id,
-      action: "submit_final_declaration",
+    await insertFinalDeclarationAudit({
+      firmId: client.firm_id,
+      clientId: client.id,
+      taxYearId: taxYear.id,
+      action: retryMode
+        ? "retry_submit_final_declaration_success"
+        : "submit_final_declaration_success",
+      fromStatus,
+      toStatus: "submitted",
       notes: `Final declaration submitted. Mode: ${mode}. Retry: ${
         retryMode ? "YES" : "NO"
       }. Correlation ID: ${hmrcCorrelationId || "N/A"}`,
-      created_by: user.id,
-    } as any);
+      createdBy: user.id,
+      meta: {
+        mode,
+        retryMode,
+        retryOfLogId,
+        attemptNumber,
+        hmrcStatus,
+        hmrcSubmissionId,
+        hmrcCorrelationId,
+        hmrcCalculationId,
+        annualTotals: finalPayload.annualTotals,
+        quarterCount: safeQuarters.length,
+      },
+    });
 
     return NextResponse.json({
       success: true,

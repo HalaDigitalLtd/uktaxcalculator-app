@@ -20,6 +20,13 @@ function normaliseTaxYear(label: string) {
   return String(label || "").trim();
 }
 
+function getSiteUrl() {
+  return (process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000").replace(
+    /\/$/,
+    ""
+  );
+}
+
 function getErrorText(err: any) {
   const parts = [
     err?.message,
@@ -33,16 +40,19 @@ function getErrorText(err: any) {
 }
 
 async function updateWorkflow(payload: any) {
-  const response = await fetch(
-    `${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001"}/api/mtd/final-declaration/workflow`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }
-  );
+  const response = await fetch(`${getSiteUrl()}/api/mtd/final-declaration/workflow`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 
-  return response.json();
+  const data = await response.json();
+
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || "Workflow update failed.");
+  }
+
+  return data;
 }
 
 async function safeReadSingle(table: string, filters: Record<string, any>) {
@@ -110,6 +120,7 @@ async function getHmrcAccessToken(firmId: string, clientId: string) {
     await safeReadSingle("hmrc_tokens", { firm_id: firmId }),
     await safeReadSingle("hmrc_oauth_tokens", { firm_id: firmId, client_id: clientId }),
     await safeReadSingle("hmrc_oauth_tokens", { firm_id: firmId }),
+    await safeReadSingle("hmrc_firm_connections", { firm_id: firmId }),
   ].filter(Boolean);
 
   const record: any = possibleRecords.find(
@@ -164,6 +175,7 @@ async function callHmrc(
     const error: any = new Error(
       `HMRC network fetch failed. URL: ${url}. Detail: ${getErrorText(fetchErr)}`
     );
+
     error.hmrcResponse = {
       url,
       method,
@@ -171,6 +183,7 @@ async function callHmrc(
       detail: getErrorText(fetchErr),
       baseUrl: HMRC_BASE_URL,
     };
+
     throw error;
   }
 
@@ -180,10 +193,14 @@ async function callHmrc(
     const errorMessage =
       data?.message ||
       data?.failures?.[0]?.message ||
+      data?.failures?.[0]?.reason ||
+      data?.errors?.[0]?.message ||
+      data?.errors?.[0]?.reason ||
       data?.code ||
       `HMRC request failed with status ${response.status}`;
 
     const error: any = new Error(errorMessage);
+
     error.status = response.status;
     error.hmrcResponse = {
       url,
@@ -191,6 +208,7 @@ async function callHmrc(
       status: response.status,
       body: data,
     };
+
     throw error;
   }
 
@@ -199,6 +217,7 @@ async function callHmrc(
 
 export async function POST(req: Request) {
   let submissionRowId: string | null = null;
+  let workflowContext: any = null;
 
   try {
     const body = await req.json();
@@ -234,21 +253,39 @@ export async function POST(req: Request) {
 
     if (!workflow) {
       return NextResponse.json(
-        { success: false, error: "Final declaration workflow has not been initialised." },
+        {
+          success: false,
+          error: "Final declaration workflow has not been initialised.",
+        },
         { status: 400 }
       );
     }
 
+    workflowContext = {
+      firmId,
+      clientId,
+      taxYearId,
+      userId,
+      annualIncome: workflow.annual_income,
+      annualExpenses: workflow.annual_expenses,
+    };
+
     if (workflow.status === "submitted" && !isAmendment) {
       return NextResponse.json(
-        { success: false, error: "Final declaration has already been submitted." },
+        {
+          success: false,
+          error: "Final declaration has already been submitted.",
+        },
         { status: 400 }
       );
     }
 
     if (!workflow.accountant_approved) {
       return NextResponse.json(
-        { success: false, error: "Accountant approval is required before final submission." },
+        {
+          success: false,
+          error: "Accountant approval is required before final submission.",
+        },
         { status: 400 }
       );
     }
@@ -370,8 +407,7 @@ export async function POST(req: Request) {
       .eq("id", submissionRowId);
 
     const finalResponse = calculationResponse;
-
-const hmrcFinalSubmissionId = calculationId;
+    const hmrcFinalSubmissionId = calculationId;
 
     await supabaseAdmin
       .from("final_declaration_hmrc_submissions")
@@ -418,6 +454,24 @@ const hmrcFinalSubmissionId = calculationId;
           updated_at: new Date().toISOString(),
         })
         .eq("id", submissionRowId);
+    }
+
+    if (workflowContext) {
+      try {
+        await updateWorkflow({
+          action: "mark_failed",
+          firmId: workflowContext.firmId,
+          clientId: workflowContext.clientId,
+          taxYearId: workflowContext.taxYearId,
+          userId: workflowContext.userId,
+          annualIncome: workflowContext.annualIncome,
+          annualExpenses: workflowContext.annualExpenses,
+          error: errorMessage,
+          notes: `Real HMRC final declaration submission failed: ${errorMessage}`,
+        });
+      } catch (workflowErr) {
+        console.error("Failed to mark final declaration workflow as failed:", workflowErr);
+      }
     }
 
     return NextResponse.json(

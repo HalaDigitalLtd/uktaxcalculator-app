@@ -33,7 +33,9 @@ function buildReadinessChecks(input: any) {
       Array.isArray(input.quarters) &&
       input.quarters.length > 0 &&
       input.quarters.every((q: any) =>
-        ["prepared", "submitted", "accepted"].includes(q.status)
+        ["prepared", "submitted", "accepted", "finalised", "ready_to_submit"].includes(
+          String(q.status || "").toLowerCase()
+        )
       ),
 
     noFailedQuarterSubmissions:
@@ -42,8 +44,8 @@ function buildReadinessChecks(input: any) {
 
     accountantApproved: Boolean(input.accountantApproved),
 
-    notLockedAgainstSubmission:
-      input.isLocked === false || input.allowLockedSubmit === true,
+    lockedForSubmission:
+      input.isLocked === true,
   };
 
   const readyToSubmit =
@@ -52,7 +54,7 @@ function buildReadinessChecks(input: any) {
     checks.allQuartersPrepared &&
     checks.noFailedQuarterSubmissions &&
     checks.accountantApproved &&
-    checks.notLockedAgainstSubmission;
+    checks.lockedForSubmission;
 
   return { checks, readyToSubmit };
 }
@@ -69,7 +71,9 @@ async function insertAudit(params: {
   metadata?: any;
   createdBy?: string | null;
 }) {
-  await supabaseAdmin.from("final_declaration_audit_trail").insert({
+  const metaPayload = params.metadata || {};
+
+  const { error } = await supabaseAdmin.from("final_declaration_audit_trail").insert({
     workflow_id: params.workflowId,
     firm_id: params.firmId,
     client_id: params.clientId,
@@ -78,9 +82,15 @@ async function insertAudit(params: {
     from_status: params.fromStatus || null,
     to_status: params.toStatus || null,
     notes: params.notes || null,
-    metadata: params.metadata || {},
+    metadata: metaPayload,
+    meta: metaPayload,
     created_by: params.createdBy || null,
   });
+
+  if (error) {
+    console.error("Final declaration audit insert failed:", error.message);
+    throw new Error(`Audit insert failed: ${error.message}`);
+  }
 }
 
 export async function GET(req: Request) {
@@ -185,14 +195,14 @@ export async function POST(req: Request) {
         ? true
         : action === "unapprove"
         ? false
-        : existingWorkflow?.accountant_approved || false;
+        : Boolean(existingWorkflow?.accountant_approved);
 
     const isLocked =
       action === "lock"
         ? true
         : action === "unlock"
         ? false
-        : existingWorkflow?.is_locked || false;
+        : Boolean(existingWorkflow?.is_locked);
 
     const readiness = buildReadinessChecks({
       ...body,
@@ -202,7 +212,7 @@ export async function POST(req: Request) {
       isLocked,
     });
 
-    let updatePayload: any = {
+    const updatePayload: any = {
       firm_id: firmId,
       client_id: clientId,
       tax_year_id: taxYearId,
@@ -231,7 +241,7 @@ export async function POST(req: Request) {
       updatePayload.accountant_approved = true;
       updatePayload.approved_at = new Date().toISOString();
       updatePayload.approved_by = userId;
-      updatePayload.ready_to_submit = true;
+      updatePayload.ready_to_submit = readiness.readyToSubmit;
       updatePayload.readiness_checks = {
         ...readiness.checks,
         accountantApproved: true,
@@ -248,16 +258,37 @@ export async function POST(req: Request) {
     }
 
     if (action === "lock") {
+      if (!existingWorkflow?.accountant_approved) {
+        return NextResponse.json(
+          { success: false, error: "Accountant approval is required before locking." },
+          { status: 400 }
+        );
+      }
+
       updatePayload.is_locked = true;
       updatePayload.locked_at = new Date().toISOString();
       updatePayload.locked_by = userId;
-      updatePayload.status = existingWorkflow?.status || "locked";
+      updatePayload.status = existingWorkflow?.status || "approved";
+      updatePayload.ready_to_submit = true;
+      updatePayload.readiness_checks = {
+        ...readiness.checks,
+        accountantApproved: true,
+        lockedForSubmission: true,
+      };
     }
 
     if (action === "unlock") {
+      if (existingWorkflow?.status === "submitted") {
+        return NextResponse.json(
+          { success: false, error: "Submitted final declaration cannot be unlocked." },
+          { status: 400 }
+        );
+      }
+
       updatePayload.is_locked = false;
       updatePayload.locked_at = null;
       updatePayload.locked_by = null;
+      updatePayload.ready_to_submit = false;
     }
 
     if (action === "mark_submitting") {
@@ -273,6 +304,7 @@ export async function POST(req: Request) {
 
       updatePayload.status = "submitting";
       updatePayload.review_state = "submission_in_progress";
+      updatePayload.ready_to_submit = false;
     }
 
     if (action === "mark_submitted") {
@@ -285,6 +317,7 @@ export async function POST(req: Request) {
       updatePayload.is_locked = true;
       updatePayload.locked_at = new Date().toISOString();
       updatePayload.locked_by = userId;
+      updatePayload.ready_to_submit = false;
     }
 
     if (action === "mark_failed") {
@@ -325,6 +358,9 @@ export async function POST(req: Request) {
         annualProfit,
         readyToSubmit: workflow.ready_to_submit,
         readinessChecks: workflow.readiness_checks,
+        hmrcFinalSubmissionId: body.hmrcFinalSubmissionId || null,
+        error: body.error || null,
+        createdFromRoute: "app/api/mtd/final-declaration/workflow/route.ts",
       },
       createdBy: userId,
     });
