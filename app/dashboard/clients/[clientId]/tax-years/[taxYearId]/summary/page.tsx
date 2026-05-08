@@ -155,7 +155,7 @@ export default function TaxYearSummaryPage() {
 
   const preparedQuarters = useMemo(() => {
     return quarters.filter((q) =>
-      ["prepared", "submitted", "finalised", "accepted"].includes(
+      ["prepared", "submitted", "finalised", "accepted", "ready_to_submit"].includes(
         String(q.status || "").toLowerCase()
       )
     ).length;

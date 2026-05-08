@@ -67,6 +67,31 @@ function buildEndpoint(template: string, params: { nino: string; taxYear: string
     .replaceAll(":taxYear", params.taxYear);
 }
 
+function isFinalDeclarationSubmitted(row: any) {
+  if (!row) return false;
+
+  const status = String(row.status || "").toLowerCase();
+  const reviewState = String(row.review_state || "").toLowerCase();
+
+  return Boolean(
+    row.submitted ||
+      row.hmrc_submission_id ||
+      row.hmrc_correlation_id ||
+      status === "submitted" ||
+      status === "submitted_to_hmrc" ||
+      reviewState === "submitted_to_hmrc"
+  );
+}
+
+function isRetryAllowed(row: any) {
+  if (!row) return false;
+
+  const status = String(row.status || "").toLowerCase();
+  const reviewState = String(row.review_state || "").toLowerCase();
+
+  return status === "submission_failed" || reviewState === "submission_failed";
+}
+
 async function insertFinalDeclarationAudit(input: {
   firmId: string;
   clientId: string;
@@ -78,17 +103,19 @@ async function insertFinalDeclarationAudit(input: {
   createdBy: string;
   meta?: any;
 }) {
-  const { error } = await supabaseAdmin.from("final_declaration_audit_trail").insert({
-    firm_id: input.firmId,
-    client_id: input.clientId,
-    tax_year_id: input.taxYearId,
-    action: input.action,
-    from_status: input.fromStatus,
-    to_status: input.toStatus,
-    notes: input.notes,
-    created_by: input.createdBy,
-    meta: input.meta || {},
-  } as any);
+  const { error } = await supabaseAdmin
+    .from("final_declaration_audit_trail")
+    .insert({
+      firm_id: input.firmId,
+      client_id: input.clientId,
+      tax_year_id: input.taxYearId,
+      action: input.action,
+      from_status: input.fromStatus,
+      to_status: input.toStatus,
+      notes: input.notes,
+      created_by: input.createdBy,
+      meta: input.meta || {},
+    } as any);
 
   if (error) {
     console.error("Final declaration audit insert failed:", error.message);
@@ -138,6 +165,59 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
 
     const fromStatus = finalDeclaration?.status || "not_started";
+
+    if (isFinalDeclarationSubmitted(finalDeclaration)) {
+      await insertFinalDeclarationAudit({
+        firmId: client.firm_id,
+        clientId: client.id,
+        taxYearId: taxYear.id,
+        action: "duplicate_final_declaration_blocked",
+        fromStatus,
+        toStatus: fromStatus,
+        notes:
+          "Duplicate final declaration submission blocked because this tax year already has HMRC submission evidence.",
+        createdBy: user.id,
+        meta: {
+          existing_submission_id: finalDeclaration?.hmrc_submission_id || null,
+          existing_correlation_id: finalDeclaration?.hmrc_correlation_id || null,
+          existing_submitted_at:
+            finalDeclaration?.hmrc_submitted_at ||
+            finalDeclaration?.submitted_at ||
+            null,
+          retryMode,
+          retryOfLogId,
+        },
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          locked: true,
+          duplicateBlocked: true,
+          error:
+            "Final declaration has already been submitted. Use explicit amendment mode for any future changes.",
+          hmrcSubmissionId: finalDeclaration?.hmrc_submission_id || null,
+          hmrcCorrelationId: finalDeclaration?.hmrc_correlation_id || null,
+          hmrcSubmittedAt:
+            finalDeclaration?.hmrc_submitted_at ||
+            finalDeclaration?.submitted_at ||
+            null,
+        },
+        { status: 409 }
+      );
+    }
+
+    if (retryMode && !isRetryAllowed(finalDeclaration)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Retry is only allowed after a failed final declaration submission.",
+        },
+        { status: 409 }
+      );
+    }
+
     const currentRetryCount = Number(finalDeclaration?.retry_count || 0);
     const nextRetryCount = currentRetryCount + (retryMode ? 1 : 0);
     const attemptNumber = retryMode ? nextRetryCount + 1 : 1;
@@ -341,19 +421,37 @@ export async function POST(req: NextRequest) {
           created_by: user.id,
         } as any);
 
-        await supabaseAdmin
-          .from("tax_year_final_declarations")
-          .update({
+        if (finalDeclaration) {
+          await supabaseAdmin
+            .from("tax_year_final_declarations")
+            .update({
+              status: "submission_failed",
+              review_state: "submission_failed",
+              submitted: false,
+              locked: true,
+              last_error:
+                errorMessage || errorCode || "HMRC final declaration failed",
+              retry_count: nextRetryCount,
+            } as any)
+            .eq("id", finalDeclaration.id)
+            .eq("firm_id", client.firm_id)
+            .eq("client_id", client.id)
+            .eq("tax_year_id", taxYear.id);
+        } else {
+          await supabaseAdmin.from("tax_year_final_declarations").insert({
+            firm_id: client.firm_id,
+            client_id: client.id,
+            tax_year_id: taxYear.id,
             status: "submission_failed",
             review_state: "submission_failed",
+            approved: true,
+            locked: true,
             submitted: false,
             last_error:
               errorMessage || errorCode || "HMRC final declaration failed",
             retry_count: nextRetryCount,
-          } as any)
-          .eq("firm_id", client.firm_id)
-          .eq("client_id", client.id)
-          .eq("tax_year_id", taxYear.id);
+          } as any);
+        }
 
         await insertFinalDeclarationAudit({
           firmId: client.firm_id,
@@ -423,6 +521,8 @@ export async function POST(req: NextRequest) {
         .update({
           status: "submitted",
           review_state: "submitted_to_hmrc",
+          approved: true,
+          locked: true,
           submitted: true,
           submitted_at: now,
           hmrc_submission_id: hmrcSubmissionId,
@@ -519,10 +619,10 @@ export async function POST(req: NextRequest) {
       attemptNumber,
       message:
         mode === "real_hmrc_api"
-          ? "Final declaration submitted to HMRC and receipt saved."
+          ? "Final declaration submitted to HMRC and receipt saved. Workflow is now locked."
           : retryMode
-          ? "Final declaration retry completed with internal sandbox receipt."
-          : "Final declaration marked submitted with internal sandbox receipt.",
+          ? "Final declaration retry completed with internal sandbox receipt. Workflow is now locked."
+          : "Final declaration marked submitted with internal sandbox receipt. Workflow is now locked.",
       clientId: client.id,
       taxYearId: taxYear.id,
       firmId: client.firm_id,
@@ -541,10 +641,7 @@ export async function POST(req: NextRequest) {
     const message = error?.message || "Unknown final declaration submission error";
 
     return NextResponse.json(
-      {
-        success: false,
-        error: message,
-      },
+      { success: false, error: message },
       {
         status:
           message === "Unauthorized" || message === "Missing authorization header"

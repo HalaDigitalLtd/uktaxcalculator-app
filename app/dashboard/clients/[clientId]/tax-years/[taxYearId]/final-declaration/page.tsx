@@ -127,7 +127,7 @@ export default function FinalDeclarationPage() {
 
   const preparedCount = useMemo(() => {
     return quarters.filter((q) =>
-      ["prepared", "submitted", "accepted", "finalised"].includes(
+      ["prepared", "submitted", "accepted", "finalised", "ready_to_submit"].includes(
         String(q.status || "").toLowerCase()
       )
     ).length;
