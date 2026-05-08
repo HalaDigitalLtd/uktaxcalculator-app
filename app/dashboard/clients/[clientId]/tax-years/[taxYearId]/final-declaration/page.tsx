@@ -45,6 +45,15 @@ const defaultWorkflow: WorkflowState = {
   audit: [],
 };
 
+const ACTIVE_AMENDMENT_STATUSES = [
+  "draft",
+  "in_progress",
+  "in_review",
+  "approved",
+  "locked",
+  "ready_to_submit",
+];
+
 function formatJson(value: any) {
   if (!value) return "No data stored.";
   try {
@@ -52,6 +61,10 @@ function formatJson(value: any) {
   } catch {
     return String(value);
   }
+}
+
+function normalise(value: any) {
+  return String(value || "").toLowerCase().trim();
 }
 
 export default function FinalDeclarationPage() {
@@ -128,9 +141,13 @@ export default function FinalDeclarationPage() {
 
   const preparedCount = useMemo(() => {
     return quarters.filter((q) =>
-      ["prepared", "submitted", "accepted", "finalised", "ready_to_submit"].includes(
-        String(q.status || "").toLowerCase()
-      )
+      [
+        "prepared",
+        "submitted",
+        "accepted",
+        "finalised",
+        "ready_to_submit",
+      ].includes(normalise(q.status))
     ).length;
   }, [quarters]);
 
@@ -151,6 +168,20 @@ export default function FinalDeclarationPage() {
     !workflow.submitted;
 
   const latestSubmissionLog = submissionLogs[0] || null;
+
+  const activeAmendmentDraft = useMemo(() => {
+    return (
+      amendments.find((a) =>
+        ACTIVE_AMENDMENT_STATUSES.includes(normalise(a.status))
+      ) || null
+    );
+  }, [amendments]);
+
+  const submittedAmendments = useMemo(() => {
+    return amendments.filter((a) =>
+      ["submitted", "accepted", "hmrc_submitted"].includes(normalise(a.status))
+    );
+  }, [amendments]);
 
   const addLocalAudit = (
     next: WorkflowState,
@@ -195,31 +226,38 @@ export default function FinalDeclarationPage() {
       const { error } = await supabase
         .from("tax_year_final_declarations")
         .update(payload)
-        .eq("id", next.id);
+        .eq("id", next.id)
+        .eq("client_id", client.id)
+        .eq("tax_year_id", taxYear.id);
 
       if (error) {
         console.error("Workflow update failed:", error);
-      }
-    } else {
-      const { data, error } = await supabase
-        .from("tax_year_final_declarations")
-        .insert(payload)
-        .select("id")
-        .single();
-
-      if (error) {
-        console.error("Workflow insert failed:", error);
+        throw error;
       }
 
-      if (data?.id) next.id = data.id;
+      return;
     }
+
+    const { data, error } = await supabase
+      .from("tax_year_final_declarations")
+      .insert(payload)
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("Workflow insert failed:", error);
+      throw error;
+    }
+
+    if (data?.id) next.id = data.id;
   };
 
   const saveAuditToDb = async (
     action: string,
     notes: string,
     previous: WorkflowState,
-    next: WorkflowState
+    next: WorkflowState,
+    extraMeta: Row = {}
   ) => {
     if (!client || !taxYear) return;
 
@@ -251,6 +289,7 @@ export default function FinalDeclarationPage() {
         quarter_count: quarters.length,
         prepared_quarter_count: preparedCount,
         created_from_page: "final_declaration_page",
+        ...extraMeta,
       },
       created_by: userId || null,
     };
@@ -271,9 +310,14 @@ export default function FinalDeclarationPage() {
     notes: string,
     previous: WorkflowState
   ) => {
-    setWorkflow(next);
-    await saveWorkflowToDb(next);
-    await saveAuditToDb(action, notes, previous, next);
+    try {
+      await saveWorkflowToDb(next);
+      await saveAuditToDb(action, notes, previous, next);
+      setWorkflow(next);
+    } catch (error: any) {
+      setMessage(error?.message || "Workflow save failed.");
+      throw error;
+    }
   };
 
   const mapDbWorkflow = (row: Row | null, auditRows: Row[]): WorkflowState => {
@@ -390,15 +434,18 @@ export default function FinalDeclarationPage() {
 
     setSubmissionLogs(logs || []);
 
-    const { data: amendmentRows } = await supabase
+    const { data: amendmentRows, error: amendmentError } = await supabase
       .from("tax_year_amendments")
       .select("*")
       .eq("client_id", clientId)
       .eq("tax_year_id", taxYearId)
       .order("created_at", { ascending: false });
 
-    setAmendments(amendmentRows || []);
+    if (amendmentError) {
+      console.error("Amendment load failed:", amendmentError);
+    }
 
+    setAmendments(amendmentRows || []);
     setLoading(false);
   };
 
@@ -413,9 +460,18 @@ export default function FinalDeclarationPage() {
       return;
     }
 
-    if (!workflow.id || !taxYearIsImmutable) {
+    if (!workflow.id || !workflow.submitted) {
       setMessage(
-        "Amendment can only be started after the original Final Declaration has been submitted or locked."
+        "Amendment can only be started after the original Final Declaration has been submitted to HMRC."
+      );
+      return;
+    }
+
+    if (activeAmendmentDraft) {
+      setMessage(
+        `Active amendment draft #${
+          activeAmendmentDraft.amendment_number || "-"
+        } already exists. Open or continue the existing draft instead of creating a duplicate.`
       );
       return;
     }
@@ -426,19 +482,35 @@ export default function FinalDeclarationPage() {
     const nextNumber =
       amendments.length === 0
         ? 1
-        : Math.max(...amendments.map((a) => Number(a.amendment_number || 0))) + 1;
+        : Math.max(
+            ...amendments.map((a) => Number(a.amendment_number || 0))
+          ) + 1;
 
-    const { error } = await supabase.from("tax_year_amendments").insert({
+    const amendmentPayload = {
       firm_id: client.firm_id || null,
       client_id: client.id,
       tax_year_id: taxYear.id,
       original_final_declaration_id: workflow.id,
       amendment_number: nextNumber,
       status: "draft",
-      reason: "Post-submission amendment draft created from Final Declaration page.",
+      reason:
+        "Post-submission amendment draft created from Final Declaration page.",
       created_by: userId || null,
       locked: false,
-    });
+      original_hmrc_submission_id: workflow.hmrcSubmissionId || null,
+      original_hmrc_correlation_id: workflow.hmrcCorrelationId || null,
+      original_hmrc_calculation_id: workflow.hmrcCalculationId || null,
+      original_submitted_at: workflow.hmrcSubmittedAt || workflow.submittedAt || null,
+      annual_income_snapshot: totals.income,
+      annual_expenses_snapshot: totals.expenses,
+      annual_profit_snapshot: totals.profit,
+    };
+
+    const { data: insertedAmendment, error } = await supabase
+      .from("tax_year_amendments")
+      .insert(amendmentPayload as any)
+      .select("*")
+      .single();
 
     if (error) {
       setMessage(`Amendment creation failed: ${error.message}`);
@@ -447,18 +519,20 @@ export default function FinalDeclarationPage() {
     }
 
     const previous = { ...workflow };
+    const notes = `Amendment draft ${nextNumber} created. Original HMRC evidence remains immutable and unchanged.`;
+
     const next = addLocalAudit(
       { ...workflow },
       "create_amendment_draft",
-      `Amendment draft ${nextNumber} created. Original HMRC evidence remains unchanged.`
+      notes
     );
 
-    await saveAuditToDb(
-      "create_amendment_draft",
-      `Amendment draft ${nextNumber} created. Original HMRC evidence remains unchanged.`,
-      previous,
-      next
-    );
+    await saveAuditToDb("create_amendment_draft", notes, previous, next, {
+      amendment_id: insertedAmendment?.id || null,
+      amendment_number: nextNumber,
+      amendment_status: "draft",
+      original_final_declaration_id: workflow.id,
+    });
 
     setMessage(`Amendment draft ${nextNumber} created successfully.`);
     await loadData();
@@ -490,6 +564,14 @@ export default function FinalDeclarationPage() {
     }
 
     if (action === "submit_for_review") {
+      if (!hasAnnualTotals || !allQuartersPrepared) {
+        setMessage(
+          "Annual totals and all prepared quarters are required before accountant review."
+        );
+        setActionLoading(false);
+        return;
+      }
+
       next.status = "in_review";
       next.reviewState = "submitted_for_accountant_review";
       auditNotes = "Submitted for accountant review.";
@@ -497,6 +579,14 @@ export default function FinalDeclarationPage() {
     }
 
     if (action === "approve") {
+      if (!hasAnnualTotals || !allQuartersPrepared) {
+        setMessage(
+          "Cannot approve until annual totals exist and all quarters are prepared."
+        );
+        setActionLoading(false);
+        return;
+      }
+
       next.status = "approved";
       next.reviewState = "accountant_approved";
       next.approved = true;
@@ -516,6 +606,14 @@ export default function FinalDeclarationPage() {
     if (action === "lock") {
       if (!next.approved) {
         setMessage("Accountant approval required before locking.");
+        setActionLoading(false);
+        return;
+      }
+
+      if (!hasAnnualTotals || !allQuartersPrepared) {
+        setMessage(
+          "Cannot lock until annual totals exist and all quarters are prepared."
+        );
         setActionLoading(false);
         return;
       }
@@ -590,25 +688,42 @@ export default function FinalDeclarationPage() {
 
       next = addLocalAudit(next, auditAction, auditNotes);
 
-      setWorkflow(next);
       await saveWorkflowToDb(next);
-      await saveAuditToDb(auditAction, auditNotes, previous, next);
+      await saveAuditToDb(auditAction, auditNotes, previous, next, {
+        submission_mode: result.mode || null,
+        hmrc_submission_id: result.hmrcSubmissionId || null,
+        hmrc_correlation_id: result.hmrcCorrelationId || null,
+        hmrc_calculation_id: result.hmrcCalculationId || null,
+      });
 
+      setWorkflow(next);
       setMessage(result.message || "Final declaration submitted successfully.");
       await loadData();
       setActionLoading(false);
       return;
     }
 
-    await saveWorkflow(next, auditAction, auditNotes, previous);
-    setMessage("Workflow updated successfully.");
+    try {
+      await saveWorkflow(next, auditAction, auditNotes, previous);
+      setMessage("Workflow updated successfully.");
+      await loadData();
+    } catch {
+      // message already set in saveWorkflow
+    }
+
     setActionLoading(false);
-    await loadData();
   };
 
   const retrySubmission = async (log: Row) => {
-    if (String(log.status || "").toLowerCase() !== "failed") {
+    if (normalise(log.status) !== "failed") {
       setMessage("Retry is only allowed for failed submission logs.");
+      return;
+    }
+
+    if (workflow.submitted) {
+      setMessage(
+        "This Final Declaration is already submitted. Retry is blocked to prevent duplicate HMRC submissions."
+      );
       return;
     }
 
@@ -740,13 +855,19 @@ export default function FinalDeclarationPage() {
             {workflow.submitted ? "Locked" : "Initialise / Refresh"}
           </button>
 
-          {taxYearIsImmutable && (
+          {workflow.submitted && (
             <button
               onClick={startAmendmentDraft}
-              disabled={actionLoading}
-              style={styles.amendmentButton}
+              disabled={actionLoading || Boolean(activeAmendmentDraft)}
+              style={
+                activeAmendmentDraft
+                  ? styles.disabledButton
+                  : styles.amendmentButton
+              }
             >
-              Start Amendment Draft
+              {activeAmendmentDraft
+                ? "Active Amendment Exists"
+                : "Start Amendment Draft"}
             </button>
           )}
         </div>
@@ -879,14 +1000,41 @@ export default function FinalDeclarationPage() {
             controlled post-submission corrections.
           </p>
 
+          <div style={styles.amendmentSummaryGrid}>
+            <div style={styles.amendmentInfoBox}>
+              <span style={styles.statLabel}>Active draft</span>
+              <strong style={activeAmendmentDraft ? styles.passValue : styles.statValue}>
+                {activeAmendmentDraft
+                  ? `#${activeAmendmentDraft.amendment_number || "-"}`
+                  : "None"}
+              </strong>
+            </div>
+
+            <div style={styles.amendmentInfoBox}>
+              <span style={styles.statLabel}>Submitted amendments</span>
+              <strong style={styles.statValue}>{submittedAmendments.length}</strong>
+            </div>
+
+            <div style={styles.amendmentInfoBox}>
+              <span style={styles.statLabel}>Original HMRC evidence</span>
+              <strong style={styles.passText}>Preserved</strong>
+            </div>
+          </div>
+
           <div style={styles.viewerQuickActions}>
             <button
               type="button"
               onClick={startAmendmentDraft}
-              disabled={actionLoading}
-              style={styles.amendmentButton}
+              disabled={actionLoading || Boolean(activeAmendmentDraft)}
+              style={
+                activeAmendmentDraft
+                  ? styles.disabledButton
+                  : styles.amendmentButton
+              }
             >
-              Start Amendment Draft
+              {activeAmendmentDraft
+                ? "Active Amendment Draft Already Exists"
+                : "Start Amendment Draft"}
             </button>
           </div>
 
@@ -901,7 +1049,8 @@ export default function FinalDeclarationPage() {
                     <th style={styles.th}>Status</th>
                     <th style={styles.th}>Reason</th>
                     <th style={styles.th}>Created</th>
-                    <th style={styles.th}>HMRC Submission</th>
+                    <th style={styles.th}>Original HMRC Submission</th>
+                    <th style={styles.th}>Amendment HMRC Submission</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -916,6 +1065,13 @@ export default function FinalDeclarationPage() {
                         {a.created_at
                           ? new Date(a.created_at).toLocaleString()
                           : "-"}
+                      </td>
+                      <td style={styles.td}>
+                        <span style={styles.monospace}>
+                          {a.original_hmrc_submission_id ||
+                            workflow.hmrcSubmissionId ||
+                            "-"}
+                        </span>
                       </td>
                       <td style={styles.td}>
                         <span style={styles.monospace}>
@@ -1184,7 +1340,7 @@ export default function FinalDeclarationPage() {
                         >
                           Headers
                         </button>
-                        {String(log.status || "").toLowerCase() === "failed" && (
+                        {normalise(log.status) === "failed" && !workflow.submitted && (
                           <button
                             type="button"
                             onClick={() => retrySubmission(log)}
@@ -1574,6 +1730,18 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     color: "#64748b",
     fontSize: "14px",
+  },
+  amendmentSummaryGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "14px",
+    marginTop: "18px",
+  },
+  amendmentInfoBox: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: "16px",
+    padding: "16px",
   },
   amendmentEmpty: {
     margin: "18px 0 0",
