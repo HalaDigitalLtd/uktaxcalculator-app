@@ -172,7 +172,7 @@ export default function TaxYearSummaryPage() {
     latestSubmissionLog?.status ||
     "Not started";
 
-  const locked = Boolean(workflow?.locked);
+  const locked = Boolean(workflow?.locked || workflow?.is_locked);
 
   const submitted = Boolean(
     workflow?.submitted ||
@@ -210,7 +210,7 @@ export default function TaxYearSummaryPage() {
     <main style={styles.page}>
       <div style={styles.header}>
         <div>
-          <Link href={`/dashboard/clients/${clientId}`} style={styles.backLink}>
+          <Link href={`/app/clients/${clientId}`} style={styles.backLink}>
             ← Back to client
           </Link>
 

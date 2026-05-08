@@ -11,23 +11,6 @@ export async function GET() {
   );
 }
 
-async function isHalaAdminUser(userId: string, email: string | undefined) {
-  if (!email) return false;
-
-  const { data, error } = await supabaseAdmin
-    .from("app_admins")
-    .select("*")
-    .eq("email", email)
-    .limit(1);
-
-  if (error) {
-    console.error("Direct app_admins check failed:", error);
-    return false;
-  }
-
-  return Boolean(data && data.length > 0);
-}
-
 export async function POST(req: NextRequest) {
   try {
     const authHeader = req.headers.get("authorization");
@@ -52,60 +35,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let body: any = {};
+    const { data: firmUser, error: firmError } = await supabaseAdmin
+      .from("firm_users")
+      .select("firm_id")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .limit(1)
+      .maybeSingle();
 
-    try {
-      const requestText = await req.text();
-      body = requestText ? JSON.parse(requestText) : {};
-    } catch {
-      body = {};
+    if (firmError || !firmUser?.firm_id) {
+      return NextResponse.json(
+        { error: "Firm not found for user." },
+        { status: 400 }
+      );
     }
 
-    const requestedFirmId = body.firmId || body.firm_id || null;
-    const userEmail = user.email || "";
-
-    let resolvedFirmId: string | null = null;
-
-    const adminOk = await isHalaAdminUser(user.id, userEmail);
-
-    if (requestedFirmId && adminOk) {
-      const { data: firmData, error: firmError } = await supabaseAdmin
-        .from("firms")
-        .select("id")
-        .eq("id", requestedFirmId)
-        .maybeSingle();
-
-      if (firmError || !firmData?.id) {
-        return NextResponse.json(
-          { error: "Requested firm not found." },
-          { status: 404 }
-        );
-      }
-
-      resolvedFirmId = firmData.id;
-    }
-
-    if (!resolvedFirmId) {
-      const { data: firmUser, error: firmError } = await supabaseAdmin
-        .from("firm_users")
-        .select("firm_id")
-        .eq("user_id", user.id)
-        .eq("status", "active")
-        .limit(1)
-        .maybeSingle();
-
-      if (firmError || !firmUser?.firm_id) {
-        return NextResponse.json(
-          {
-            error:
-              "Firm not found for user. If using admin mode, select a firm from /admin/firms first.",
-          },
-          { status: 400 }
-        );
-      }
-
-      resolvedFirmId = firmUser.firm_id;
-    }
+    const resolvedFirmId = firmUser.firm_id;
 
     const state = crypto.randomBytes(32).toString("hex");
 
@@ -141,7 +86,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       authUrl: authUrl.toString(),
       firmId: resolvedFirmId,
-      adminMode: adminOk,
+      adminMode: false,
     });
   } catch (error: any) {
     console.error("HMRC connect error:", error);

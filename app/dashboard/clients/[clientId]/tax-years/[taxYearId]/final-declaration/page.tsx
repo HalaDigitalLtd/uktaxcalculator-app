@@ -227,7 +227,7 @@ export default function FinalDeclarationPage() {
       from_status: previous.status || null,
       to_status: next.status || null,
       notes,
-            meta: {
+      meta: {
         workflow_id: next.id || null,
         review_state_before: previous.reviewState || null,
         review_state_after: next.reviewState || null,
@@ -361,12 +361,14 @@ export default function FinalDeclarationPage() {
     const { data: finalDeclarationData } = await supabase
       .from("tax_year_final_declarations")
       .select("*")
+      .eq("client_id", clientId)
       .eq("tax_year_id", taxYearId)
       .maybeSingle();
 
     const { data: auditRows } = await supabase
       .from("final_declaration_audit_trail")
       .select("*")
+      .eq("client_id", clientId)
       .eq("tax_year_id", taxYearId)
       .order("created_at", { ascending: false });
 
@@ -375,6 +377,7 @@ export default function FinalDeclarationPage() {
     const { data: logs } = await supabase
       .from("hmrc_submission_logs")
       .select("*")
+      .eq("client_id", clientId)
       .eq("tax_year_id", taxYearId)
       .eq("submission_type", "final_declaration")
       .order("created_at", { ascending: false })
@@ -607,12 +610,18 @@ export default function FinalDeclarationPage() {
     <main style={styles.page}>
       <div style={styles.header}>
         <div>
-          <Link
-            href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/summary`}
-            style={styles.backLink}
-          >
-            ← Back to tax year summary
-          </Link>
+          <div style={styles.backLinks}>
+            <Link href={`/app/clients/${clientId}`} style={styles.backLink}>
+              ← Back to client
+            </Link>
+
+            <Link
+              href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/summary`}
+              style={styles.backLink}
+            >
+              Back to tax year summary
+            </Link>
+          </div>
 
           <h1 style={styles.title}>Final Declaration Workflow</h1>
 
@@ -803,6 +812,7 @@ export default function FinalDeclarationPage() {
               >
                 View latest request JSON
               </button>
+
               <button
                 type="button"
                 onClick={() => openViewer(latestSubmissionLog, "response")}
@@ -1086,6 +1096,11 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "24px",
     alignItems: "flex-start",
     marginBottom: "24px",
+  },
+  backLinks: {
+    display: "flex",
+    gap: "14px",
+    flexWrap: "wrap",
   },
   backLink: {
     color: "#2563eb",
