@@ -180,6 +180,8 @@ export default function TaxYearSummaryPage() {
       latestSubmissionLog?.status === "submitted"
   );
 
+  const taxYearIsImmutable = submitted || locked;
+
   const hmrcSubmissionId =
     workflow?.hmrc_submission_id ||
     latestSubmissionLog?.hmrc_submission_id ||
@@ -236,14 +238,29 @@ export default function TaxYearSummaryPage() {
 
           <Link
             href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/final-declaration`}
-            style={styles.primaryButton}
+            style={taxYearIsImmutable ? styles.lockedButton : styles.primaryButton}
           >
-            Open Final Declaration
+            {taxYearIsImmutable ? "View Locked Declaration" : "Open Final Declaration"}
           </Link>
         </div>
       </div>
 
       {message && <div style={styles.message}>{message}</div>}
+
+      {taxYearIsImmutable && (
+        <section style={styles.lockBanner}>
+          <h2 style={styles.lockTitle}>Final Declaration submitted</h2>
+          <p style={styles.lockText}>
+            This tax year is locked. Original HMRC evidence, submission ID,
+            correlation ID and audit records must be preserved permanently.
+            Any changes must be handled through a separate amendment workflow.
+          </p>
+          <p style={styles.lockMeta}>
+            Normal quarter editing is blocked from this summary page to prevent
+            accidental post-submission changes.
+          </p>
+        </section>
+      )}
 
       <section style={styles.statsGrid}>
         <div style={styles.statCard}>
@@ -273,7 +290,7 @@ export default function TaxYearSummaryPage() {
         <div style={styles.card}>
           <h2 style={styles.sectionTitle}>Final Declaration Status</h2>
 
-          <div style={styles.statusBox}>
+          <div style={taxYearIsImmutable ? styles.lockedStatusBox : styles.statusBox}>
             <span style={styles.statusLabel}>Current state</span>
             <strong style={styles.statusValue}>
               {String(finalStatus).replaceAll("_", " ")}
@@ -298,7 +315,7 @@ export default function TaxYearSummaryPage() {
 
             <div>
               <span style={styles.miniLabel}>Lock status</span>
-              <strong>{locked ? "Locked" : "Unlocked"}</strong>
+              <strong>{taxYearIsImmutable ? "Locked" : "Unlocked"}</strong>
             </div>
 
             <div>
@@ -357,7 +374,7 @@ export default function TaxYearSummaryPage() {
 
             <div style={styles.checkRow}>
               <span>Final declaration locked</span>
-              <strong>{locked ? "Yes" : "No"}</strong>
+              <strong>{taxYearIsImmutable ? "Yes" : "No"}</strong>
             </div>
 
             <div style={styles.checkRow}>
@@ -433,12 +450,16 @@ export default function TaxYearSummaryPage() {
                       </td>
 
                       <td style={styles.td}>
-                        <Link
-                          href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/quarters/${q.id}`}
-                          style={styles.smallButton}
-                        >
-                          Open
-                        </Link>
+                        {taxYearIsImmutable ? (
+                          <span style={styles.disabledButton}>Locked</span>
+                        ) : (
+                          <Link
+                            href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/quarters/${q.id}`}
+                            style={styles.smallButton}
+                          >
+                            Open
+                          </Link>
+                        )}
                       </td>
                     </tr>
                   );
@@ -540,6 +561,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     textDecoration: "none",
   },
+  lockedButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid #92400e",
+    background: "#fffbeb",
+    color: "#92400e",
+    padding: "12px 18px",
+    borderRadius: "12px",
+    fontWeight: 900,
+    textDecoration: "none",
+  },
   secondaryButton: {
     border: "1px solid #cbd5e1",
     background: "white",
@@ -557,6 +590,31 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "14px",
     marginBottom: "20px",
     fontWeight: 700,
+  },
+  lockBanner: {
+    background: "#fffbeb",
+    border: "1px solid #f59e0b",
+    color: "#78350f",
+    padding: "20px",
+    borderRadius: "18px",
+    marginBottom: "20px",
+    boxShadow: "0 10px 25px rgba(146, 64, 14, 0.08)",
+  },
+  lockTitle: {
+    margin: "0 0 8px",
+    fontSize: "22px",
+    fontWeight: 900,
+  },
+  lockText: {
+    margin: "0 0 8px",
+    fontSize: "15px",
+    lineHeight: 1.6,
+    fontWeight: 700,
+  },
+  lockMeta: {
+    margin: 0,
+    fontSize: "14px",
+    color: "#92400e",
   },
   statsGrid: {
     display: "grid",
@@ -615,6 +673,13 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "18px",
     marginBottom: "16px",
   },
+  lockedStatusBox: {
+    background: "#fffbeb",
+    border: "1px solid #f59e0b",
+    borderRadius: "16px",
+    padding: "18px",
+    marginBottom: "16px",
+  },
   statusLabel: {
     display: "block",
     color: "#64748b",
@@ -626,6 +691,7 @@ const styles: Record<string, React.CSSProperties> = {
   statusValue: {
     fontSize: "22px",
     fontWeight: 900,
+    textTransform: "capitalize",
   },
   statusGrid: {
     display: "grid",
@@ -688,6 +754,16 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "8px 12px",
     borderRadius: "10px",
     fontWeight: 800,
+  },
+  disabledButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#e5e7eb",
+    color: "#6b7280",
+    padding: "8px 12px",
+    borderRadius: "10px",
+    fontWeight: 900,
   },
   historyList: {
     display: "grid",

@@ -18,6 +18,7 @@ export default function QuarterWorkspacePage() {
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
   const [quarter, setQuarter] = useState<Row | null>(null);
+  const [finalWorkflow, setFinalWorkflow] = useState<Row | null>(null);
   const [firmId, setFirmId] = useState("");
 
   const [income, setIncome] = useState("0");
@@ -27,6 +28,13 @@ export default function QuarterWorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+
+  const taxYearIsImmutable = Boolean(
+    finalWorkflow?.submitted ||
+      finalWorkflow?.locked ||
+      finalWorkflow?.is_locked ||
+      finalWorkflow?.status === "submitted"
+  );
 
   const money = (value: any) =>
     new Intl.NumberFormat("en-GB", {
@@ -139,6 +147,15 @@ export default function QuarterWorkspacePage() {
     setExpenses(String(quarterData.expenses ?? 0));
     setStatus(quarterData.status || "not_started");
 
+    const { data: finalWorkflowData } = await supabase
+      .from("tax_year_final_declarations")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .maybeSingle();
+
+    setFinalWorkflow(finalWorkflowData || null);
+
     setLoading(false);
   };
 
@@ -148,6 +165,13 @@ export default function QuarterWorkspacePage() {
   }, [clientId, taxYearId, quarterId]);
 
   const saveQuarter = async () => {
+    if (taxYearIsImmutable) {
+      setMessage(
+        "This tax year is locked. Quarter edits are blocked. Start an amendment workflow instead."
+      );
+      return;
+    }
+
     if (!firmId) {
       setMessage("Firm not resolved. Please refresh and try again.");
       return;
@@ -197,6 +221,13 @@ export default function QuarterWorkspacePage() {
   };
 
   const markPrepared = async () => {
+    if (taxYearIsImmutable) {
+      setMessage(
+        "This tax year is locked. Quarter edits are blocked. Start an amendment workflow instead."
+      );
+      return;
+    }
+
     setStatus("prepared");
 
     if (!firmId) {
@@ -288,15 +319,28 @@ export default function QuarterWorkspacePage() {
 
           <button
             onClick={saveQuarter}
-            disabled={saving}
-            style={styles.primaryButton}
+            disabled={saving || taxYearIsImmutable}
+            style={taxYearIsImmutable ? styles.disabledButton : styles.primaryButton}
           >
-            {saving ? "Saving..." : "Save Quarter"}
+            {taxYearIsImmutable ? "Locked" : saving ? "Saving..." : "Save Quarter"}
           </button>
         </div>
       </div>
 
       {message && <div style={styles.message}>{message}</div>}
+
+      {taxYearIsImmutable && (
+        <section style={styles.lockBanner}>
+          <h2 style={styles.lockTitle}>Tax year locked</h2>
+          <p style={styles.lockText}>
+            Final Declaration has already been submitted or locked. Quarter edits are
+            blocked to preserve the original HMRC submission evidence.
+          </p>
+          <p style={styles.lockMeta}>
+            Use a separate amendment workflow for any post-submission corrections.
+          </p>
+        </section>
+      )}
 
       <section style={styles.statsGrid}>
         <div style={styles.statCard}>
@@ -329,8 +373,9 @@ export default function QuarterWorkspacePage() {
             <input
               type="number"
               value={income}
+              disabled={taxYearIsImmutable}
               onChange={(e) => setIncome(e.target.value)}
-              style={styles.input}
+              style={taxYearIsImmutable ? styles.disabledInput : styles.input}
             />
           </label>
 
@@ -339,8 +384,9 @@ export default function QuarterWorkspacePage() {
             <input
               type="number"
               value={expenses}
+              disabled={taxYearIsImmutable}
               onChange={(e) => setExpenses(e.target.value)}
-              style={styles.input}
+              style={taxYearIsImmutable ? styles.disabledInput : styles.input}
             />
           </label>
 
@@ -348,8 +394,9 @@ export default function QuarterWorkspacePage() {
             Status
             <select
               value={status}
+              disabled={taxYearIsImmutable}
               onChange={(e) => setStatus(e.target.value)}
-              style={styles.input}
+              style={taxYearIsImmutable ? styles.disabledInput : styles.input}
             >
               <option value="not_started">not_started</option>
               <option value="draft">draft</option>
@@ -363,18 +410,18 @@ export default function QuarterWorkspacePage() {
         <div style={styles.buttonRow}>
           <button
             onClick={saveQuarter}
-            disabled={saving}
-            style={styles.primaryButton}
+            disabled={saving || taxYearIsImmutable}
+            style={taxYearIsImmutable ? styles.disabledButton : styles.primaryButton}
           >
-            Save Quarter
+            {taxYearIsImmutable ? "Locked" : "Save Quarter"}
           </button>
 
           <button
             onClick={markPrepared}
-            disabled={saving}
-            style={styles.secondaryButton}
+            disabled={saving || taxYearIsImmutable}
+            style={taxYearIsImmutable ? styles.disabledButton : styles.secondaryButton}
           >
-            Mark Prepared
+            {taxYearIsImmutable ? "Locked" : "Mark Prepared"}
           </button>
         </div>
       </section>
@@ -401,6 +448,11 @@ export default function QuarterWorkspacePage() {
           <div style={styles.checkRow}>
             <span>Ready to submit</span>
             <strong>{status === "prepared" ? "Yes" : "No"}</strong>
+          </div>
+
+          <div style={styles.checkRow}>
+            <span>Post-submission edit lock</span>
+            <strong>{taxYearIsImmutable ? "Active" : "Not active"}</strong>
           </div>
         </div>
       </section>
@@ -461,6 +513,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: "pointer",
   },
+  disabledButton: {
+    border: "1px solid #d1d5db",
+    background: "#e5e7eb",
+    color: "#6b7280",
+    padding: "12px 18px",
+    borderRadius: "12px",
+    fontWeight: 900,
+    cursor: "not-allowed",
+  },
   message: {
     background: "#eef6ff",
     border: "1px solid #bfdbfe",
@@ -469,6 +530,31 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "14px",
     marginBottom: "20px",
     fontWeight: 700,
+  },
+  lockBanner: {
+    background: "#fffbeb",
+    border: "1px solid #f59e0b",
+    color: "#78350f",
+    padding: "20px",
+    borderRadius: "18px",
+    marginBottom: "20px",
+    boxShadow: "0 10px 25px rgba(146, 64, 14, 0.08)",
+  },
+  lockTitle: {
+    margin: "0 0 8px",
+    fontSize: "22px",
+    fontWeight: 900,
+  },
+  lockText: {
+    margin: "0 0 8px",
+    fontSize: "15px",
+    lineHeight: 1.6,
+    fontWeight: 700,
+  },
+  lockMeta: {
+    margin: 0,
+    fontSize: "14px",
+    color: "#92400e",
   },
   statsGrid: {
     display: "grid",
@@ -528,6 +614,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "12px",
     padding: "12px",
     fontSize: "15px",
+  },
+  disabledInput: {
+    border: "1px solid #d1d5db",
+    borderRadius: "12px",
+    padding: "12px",
+    fontSize: "15px",
+    background: "#f3f4f6",
+    color: "#6b7280",
+    cursor: "not-allowed",
   },
   buttonRow: {
     display: "flex",
