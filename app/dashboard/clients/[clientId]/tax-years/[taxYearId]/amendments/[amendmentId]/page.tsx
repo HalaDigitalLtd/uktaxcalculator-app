@@ -7,8 +7,29 @@ import { supabase } from "../../../../../../../../lib/supabaseClient";
 
 type Row = Record<string, any>;
 
+const SUBMITTED_STATUSES = ["submitted", "accepted", "hmrc_submitted"];
+const LOCKED_STATUSES = ["locked", ...SUBMITTED_STATUSES];
+
 function normalise(value: any) {
   return String(value || "").toLowerCase().trim();
+}
+
+function formatDate(value: any) {
+  if (!value) return "-";
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return "-";
+  }
+}
+
+function formatJson(value: any) {
+  if (!value) return "No data stored.";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 export default function AmendmentDetailPage() {
@@ -17,11 +38,16 @@ export default function AmendmentDetailPage() {
   const taxYearId = params.taxYearId as string;
   const amendmentId = params.amendmentId as string;
 
+  const [userId, setUserId] = useState("");
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
   const [amendment, setAmendment] = useState<Row | null>(null);
   const [workflow, setWorkflow] = useState<Row | null>(null);
   const [quarters, setQuarters] = useState<Row[]>([]);
+  const [auditTrail, setAuditTrail] = useState<Row[]>([]);
+  const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
+  const [selectedLog, setSelectedLog] = useState<Row | null>(null);
+  const [viewerMode, setViewerMode] = useState<"request" | "response" | "headers" | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -88,18 +114,66 @@ export default function AmendmentDetailPage() {
     profit: totals.profit - originalProfit,
   };
 
+  const status = normalise(amendment?.status || "draft");
+
   const amendmentLocked = Boolean(
-    amendment?.locked ||
-      ["locked", "submitted", "accepted", "hmrc_submitted"].includes(
-        normalise(amendment?.status)
-      )
+    amendment?.locked || LOCKED_STATUSES.includes(status)
+  );
+
+  const amendmentSubmitted = Boolean(
+    amendment?.hmrc_submission_id || SUBMITTED_STATUSES.includes(status)
   );
 
   const originalSubmitted = Boolean(
     workflow?.submitted || workflow?.status === "submitted"
   );
 
-  const canEditReason = !amendmentLocked;
+  const hasReason = Boolean(String(amendment?.reason || "").trim());
+
+  const readiness = {
+    originalSubmitted,
+    hasReason,
+    notSubmitted: !amendmentSubmitted,
+    locked: amendmentLocked,
+    hasVariance:
+      variance.income !== 0 || variance.expenses !== 0 || variance.profit !== 0,
+  };
+
+  const canSubmitForReview =
+    originalSubmitted && hasReason && !amendmentLocked && status === "draft";
+
+  const canApprove =
+    originalSubmitted && hasReason && !amendmentLocked && status === "in_review";
+
+  const canLock =
+    originalSubmitted && hasReason && !amendmentLocked && status === "approved";
+
+  const canUnlock =
+    originalSubmitted &&
+    amendmentLocked &&
+    !amendmentSubmitted &&
+    status === "locked";
+
+  const canSubmitToHmrc =
+    originalSubmitted && amendmentLocked && !amendmentSubmitted && status === "locked";
+
+  const viewerTitle =
+    viewerMode === "request"
+      ? "HMRC Amendment Request Payload"
+      : viewerMode === "response"
+      ? "HMRC Amendment Response Payload"
+      : viewerMode === "headers"
+      ? "HMRC Amendment Response Headers"
+      : "";
+
+  const viewerData =
+    viewerMode === "request"
+      ? selectedLog?.request_payload
+      : viewerMode === "response"
+      ? selectedLog?.response_payload
+      : viewerMode === "headers"
+      ? selectedLog?.response_headers
+      : null;
 
   const loadData = async () => {
     setLoading(true);
@@ -111,6 +185,8 @@ export default function AmendmentDetailPage() {
       window.location.href = "/auth/login";
       return;
     }
+
+    setUserId(userData.user.id);
 
     const { data: clientData, error: clientError } = await supabase
       .from("clients")
@@ -179,6 +255,30 @@ export default function AmendmentDetailPage() {
     }
 
     setQuarters(quarterData || []);
+
+    const { data: auditRows } = await supabase
+      .from("final_declaration_audit_trail")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .contains("meta", { amendment_id: amendmentId })
+      .order("created_at", { ascending: false });
+
+    setAuditTrail(auditRows || []);
+
+    const { data: logs } = await supabase
+      .from("hmrc_submission_logs")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .eq("submission_type", "final_declaration_amendment")
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    setSubmissionLogs(
+      (logs || []).filter((log) => log.amendment_id === amendmentId || log.meta?.amendment_id === amendmentId)
+    );
+
     setLoading(false);
   };
 
@@ -187,11 +287,67 @@ export default function AmendmentDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId, amendmentId]);
 
-  const updateAmendment = async (payload: Row, successMessage: string) => {
+  const saveAudit = async (
+    action: string,
+    notes: string,
+    fromStatus: string | null,
+    toStatus: string | null,
+    extraMeta: Row = {}
+  ) => {
+    if (!client || !taxYear || !amendment) return;
+
+    const { error } = await supabase.from("final_declaration_audit_trail").insert({
+      workflow_id: workflow?.id || amendment.original_final_declaration_id || null,
+      firm_id: client.firm_id,
+      client_id: client.id,
+      tax_year_id: taxYear.id,
+      action,
+      from_status: fromStatus,
+      to_status: toStatus,
+      notes,
+      meta: {
+        amendment_id: amendment.id,
+        amendment_number: amendment.amendment_number || null,
+        original_final_declaration_id:
+          amendment.original_final_declaration_id || workflow?.id || null,
+        original_hmrc_submission_id:
+          amendment.original_hmrc_submission_id || workflow?.hmrc_submission_id || null,
+        original_hmrc_correlation_id:
+          amendment.original_hmrc_correlation_id || workflow?.hmrc_correlation_id || null,
+        current_income: totals.income,
+        current_expenses: totals.expenses,
+        current_profit: totals.profit,
+        original_income: originalIncome,
+        original_expenses: originalExpenses,
+        original_profit: originalProfit,
+        variance_income: variance.income,
+        variance_expenses: variance.expenses,
+        variance_profit: variance.profit,
+        created_from_page: "amendment_detail_page",
+        ...extraMeta,
+      },
+      created_by: userId || null,
+    } as any);
+
+    if (error) {
+      console.error("Amendment audit insert failed:", error);
+      setMessage(`Audit warning: ${error.message}`);
+    }
+  };
+
+  const updateAmendment = async (
+    payload: Row,
+    successMessage: string,
+    auditAction: string,
+    auditNotes: string
+  ) => {
     if (!amendment) return;
 
     setActionLoading(true);
     setMessage("");
+
+    const previousStatus = amendment.status || "draft";
+    const nextStatus = payload.status || previousStatus;
 
     const { error } = await supabase
       .from("tax_year_amendments")
@@ -209,6 +365,10 @@ export default function AmendmentDetailPage() {
       return;
     }
 
+    await saveAudit(auditAction, auditNotes, previousStatus, nextStatus, {
+      update_payload: payload,
+    });
+
     setMessage(successMessage);
     await loadData();
     setActionLoading(false);
@@ -217,51 +377,121 @@ export default function AmendmentDetailPage() {
   const saveReason = async () => {
     if (!amendment) return;
 
+    if (amendmentLocked) {
+      setMessage("This amendment is locked. Reason cannot be changed.");
+      return;
+    }
+
     await updateAmendment(
       {
         reason: amendment.reason || "",
       },
-      "Amendment reason saved."
+      "Amendment reason saved.",
+      "amendment_reason_saved",
+      "Amendment reason updated."
     );
   };
 
-  const changeStatus = async (nextStatus: string) => {
-    if (!amendment) return;
-
-    if (!originalSubmitted) {
-      setMessage(
-        "Original Final Declaration must be submitted before amendment workflow can continue."
-      );
+  const submitForReview = async () => {
+    if (!canSubmitForReview) {
+      setMessage("Reason and original submission are required before review.");
       return;
     }
 
-    if (amendmentLocked && nextStatus !== "submitted") {
-      setMessage("This amendment is locked. Further changes are blocked.");
-      return;
-    }
+    await updateAmendment(
+      {
+        status: "in_review",
+        locked: false,
+      },
+      "Amendment submitted for review.",
+      "amendment_submit_for_review",
+      "Amendment submitted for accountant review."
+    );
+  };
 
-    if (nextStatus === "in_review" && !amendment.reason) {
-      setMessage("Please enter an amendment reason before review.");
-      return;
-    }
-
-    if (nextStatus === "approved" && normalise(amendment.status) !== "in_review") {
+  const approveAmendment = async () => {
+    if (!canApprove) {
       setMessage("Amendment must be in review before approval.");
       return;
     }
 
-    if (nextStatus === "locked" && normalise(amendment.status) !== "approved") {
+    await updateAmendment(
+      {
+        status: "approved",
+        approved: true,
+        approved_at: new Date().toISOString(),
+        approved_by: userId || null,
+        locked: false,
+      },
+      "Amendment approved.",
+      "amendment_approved",
+      "Accountant approved the amendment."
+    );
+  };
+
+  const lockAmendment = async () => {
+    if (!canLock) {
       setMessage("Amendment must be approved before locking.");
       return;
     }
 
     await updateAmendment(
       {
-        status: nextStatus,
-        locked: nextStatus === "locked",
+        status: "locked",
+        locked: true,
+        locked_at: new Date().toISOString(),
+        locked_by: userId || null,
+        locked_income: totals.income,
+        locked_expenses: totals.expenses,
+        locked_profit: totals.profit,
+        variance_income: variance.income,
+        variance_expenses: variance.expenses,
+        variance_profit: variance.profit,
       },
-      `Amendment status updated to ${nextStatus.replaceAll("_", " ")}.`
+      "Amendment locked for HMRC submission.",
+      "amendment_locked",
+      "Amendment locked. Locked totals and variances preserved."
     );
+  };
+
+  const unlockAmendment = async () => {
+    if (!canUnlock) {
+      setMessage("Only a locked, unsubmitted amendment can be unlocked.");
+      return;
+    }
+
+    await updateAmendment(
+      {
+        status: "approved",
+        locked: false,
+        unlocked_at: new Date().toISOString(),
+        unlocked_by: userId || null,
+      },
+      "Amendment unlocked.",
+      "amendment_unlocked",
+      "Locked amendment was unlocked before HMRC submission."
+    );
+  };
+
+  const submitToHmrcPlaceholder = async () => {
+    if (!canSubmitToHmrc) {
+      setMessage("Amendment must be locked and unsubmitted before HMRC submission.");
+      return;
+    }
+
+    setMessage(
+      "HMRC amendment submission route is the next implementation step. This button is intentionally blocked until server-side duplicate protection and evidence preservation are added."
+    );
+  };
+
+  const openViewer = (log: Row, mode: "request" | "response" | "headers") => {
+    setSelectedLog(log);
+    setViewerMode(mode);
+  };
+
+  const closeViewer = () => {
+    setSelectedLog(null);
+    setViewerMode(null);
   };
 
   if (loading) {
@@ -299,6 +529,12 @@ export default function AmendmentDetailPage() {
           <p style={styles.subtitle}>
             Client: <strong>{clientName}</strong> · Tax year:{" "}
             <strong>{taxYear?.year_label || "Unknown"}</strong>
+          </p>
+
+          <p style={styles.subtitle}>
+            Current status:{" "}
+            <strong>{String(amendment?.status || "draft").replaceAll("_", " ")}</strong>{" "}
+            · Lock: <strong>{amendmentLocked ? "Locked" : "Unlocked"}</strong>
           </p>
         </div>
 
@@ -339,37 +575,52 @@ export default function AmendmentDetailPage() {
         </div>
 
         <div style={styles.statCard}>
-          <span style={styles.statLabel}>Status</span>
-          <strong style={styles.statValue}>
-            {String(amendment?.status || "draft").replaceAll("_", " ")}
+          <span style={styles.statLabel}>HMRC amendment</span>
+          <strong style={amendmentSubmitted ? styles.passValue : styles.statValue}>
+            {amendmentSubmitted ? "Submitted" : "Not submitted"}
           </strong>
         </div>
       </section>
 
       <section style={styles.twoCol}>
         <div style={styles.card}>
-          <h2 style={styles.sectionTitle}>Amendment Reason</h2>
+          <h2 style={styles.sectionTitle}>Readiness Checks</h2>
 
-          <textarea
-            value={amendment?.reason || ""}
-            disabled={!canEditReason || actionLoading}
-            onChange={(e) =>
-              setAmendment((prev) =>
-                prev ? { ...prev, reason: e.target.value } : prev
-              )
-            }
-            style={styles.textarea}
-            placeholder="Explain why this amendment is required..."
-          />
+          <div style={styles.checkList}>
+            <div style={styles.checkRow}>
+              <span>Original Final Declaration submitted</span>
+              <strong style={readiness.originalSubmitted ? styles.passText : styles.failText}>
+                {readiness.originalSubmitted ? "Pass" : "Fail"}
+              </strong>
+            </div>
 
-          <div style={styles.actionsRow}>
-            <button
-              onClick={saveReason}
-              disabled={!canEditReason || actionLoading}
-              style={!canEditReason ? styles.disabledButton : styles.primaryButton}
-            >
-              Save Reason
-            </button>
+            <div style={styles.checkRow}>
+              <span>Amendment reason entered</span>
+              <strong style={readiness.hasReason ? styles.passText : styles.failText}>
+                {readiness.hasReason ? "Pass" : "Fail"}
+              </strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>Amendment not already submitted</span>
+              <strong style={readiness.notSubmitted ? styles.passText : styles.failText}>
+                {readiness.notSubmitted ? "Pass" : "Fail"}
+              </strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>Locked for HMRC submission</span>
+              <strong style={readiness.locked ? styles.passText : styles.failText}>
+                {readiness.locked ? "Yes" : "No"}
+              </strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>Variance detected</span>
+              <strong style={readiness.hasVariance ? styles.passText : styles.failText}>
+                {readiness.hasVariance ? "Yes" : "No"}
+              </strong>
+            </div>
           </div>
         </div>
 
@@ -405,14 +656,38 @@ export default function AmendmentDetailPage() {
             <div style={styles.checkRow}>
               <span>Original submitted at</span>
               <strong>
-                {amendment?.original_submitted_at
-                  ? new Date(amendment.original_submitted_at).toLocaleString()
-                  : workflow?.hmrc_submitted_at
-                  ? new Date(workflow.hmrc_submitted_at).toLocaleString()
-                  : "-"}
+                {formatDate(
+                  amendment?.original_submitted_at || workflow?.hmrc_submitted_at
+                )}
               </strong>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>Amendment Reason</h2>
+
+        <textarea
+          value={amendment?.reason || ""}
+          disabled={amendmentLocked || actionLoading}
+          onChange={(e) =>
+            setAmendment((prev) =>
+              prev ? { ...prev, reason: e.target.value } : prev
+            )
+          }
+          style={styles.textarea}
+          placeholder="Explain why this amendment is required..."
+        />
+
+        <div style={styles.actionsRow}>
+          <button
+            onClick={saveReason}
+            disabled={amendmentLocked || actionLoading}
+            style={amendmentLocked ? styles.disabledButton : styles.primaryButton}
+          >
+            Save Reason
+          </button>
         </div>
       </section>
 
@@ -421,31 +696,43 @@ export default function AmendmentDetailPage() {
 
         <div style={styles.actionGrid}>
           <button
-            onClick={() => changeStatus("in_review")}
-            disabled={actionLoading || amendmentLocked}
-            style={amendmentLocked ? styles.disabledButton : styles.blueButton}
+            onClick={submitForReview}
+            disabled={actionLoading || !canSubmitForReview}
+            style={!canSubmitForReview ? styles.disabledButton : styles.blueButton}
           >
-            Submit Amendment for Review
+            Submit for Review
           </button>
 
           <button
-            onClick={() => changeStatus("approved")}
-            disabled={actionLoading || amendmentLocked}
-            style={amendmentLocked ? styles.disabledButton : styles.greenButton}
+            onClick={approveAmendment}
+            disabled={actionLoading || !canApprove}
+            style={!canApprove ? styles.disabledButton : styles.greenButton}
           >
             Approve Amendment
           </button>
 
           <button
-            onClick={() => changeStatus("locked")}
-            disabled={actionLoading || amendmentLocked}
-            style={amendmentLocked ? styles.disabledButton : styles.amberButton}
+            onClick={lockAmendment}
+            disabled={actionLoading || !canLock}
+            style={!canLock ? styles.disabledButton : styles.amberButton}
           >
             Lock Amendment
           </button>
 
-          <button disabled style={styles.disabledButton}>
-            HMRC Amendment Submit Coming Next
+          <button
+            onClick={unlockAmendment}
+            disabled={actionLoading || !canUnlock}
+            style={!canUnlock ? styles.disabledButton : styles.slateButton}
+          >
+            Unlock Amendment
+          </button>
+
+          <button
+            onClick={submitToHmrcPlaceholder}
+            disabled={actionLoading || !canSubmitToHmrc}
+            style={!canSubmitToHmrc ? styles.disabledButton : styles.purpleButton}
+          >
+            Submit Amendment to HMRC
           </button>
         </div>
       </section>
@@ -497,12 +784,127 @@ export default function AmendmentDetailPage() {
       </section>
 
       <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>Amendment Submission Ledger</h2>
+
+        {submissionLogs.length === 0 ? (
+          <p style={styles.muted}>No HMRC amendment submission logs yet.</p>
+        ) : (
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Created</th>
+                  <th style={styles.th}>Status</th>
+                  <th style={styles.th}>HTTP</th>
+                  <th style={styles.th}>Submission ID</th>
+                  <th style={styles.th}>Correlation ID</th>
+                  <th style={styles.th}>Evidence</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {submissionLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td style={styles.td}>{formatDate(log.created_at)}</td>
+                    <td style={styles.td}>
+                      <span style={styles.badge}>{log.status || "unknown"}</span>
+                    </td>
+                    <td style={styles.td}>{log.http_status || "-"}</td>
+                    <td style={styles.td}>
+                      <span style={styles.monospace}>
+                        {log.hmrc_submission_id || "-"}
+                      </span>
+                    </td>
+                    <td style={styles.td}>
+                      <span style={styles.monospace}>
+                        {log.hmrc_correlation_id || "-"}
+                      </span>
+                    </td>
+                    <td style={styles.td}>
+                      <div style={styles.rowActions}>
+                        <button
+                          type="button"
+                          onClick={() => openViewer(log, "request")}
+                          style={styles.smallButton}
+                        >
+                          Request
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openViewer(log, "response")}
+                          style={styles.smallButton}
+                        >
+                          Response
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openViewer(log, "headers")}
+                          style={styles.smallButton}
+                        >
+                          Headers
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {selectedLog && viewerMode && (
+        <section style={styles.card}>
+          <div style={styles.jsonHeader}>
+            <div>
+              <h2 style={styles.sectionTitle}>{viewerTitle}</h2>
+              <p style={styles.muted}>
+                Log created: {formatDate(selectedLog.created_at)} · Status:{" "}
+                {selectedLog.status || "Unknown"} · HTTP:{" "}
+                {selectedLog.http_status || "-"}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={closeViewer}
+              style={styles.secondaryButton}
+            >
+              Close viewer
+            </button>
+          </div>
+
+          <pre style={styles.jsonBox}>{formatJson(viewerData)}</pre>
+        </section>
+      )}
+
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>Amendment Audit Trail</h2>
+
+        {auditTrail.length === 0 ? (
+          <p style={styles.muted}>No amendment audit events yet.</p>
+        ) : (
+          <div style={styles.auditList}>
+            {auditTrail.map((item) => (
+              <div key={item.id} style={styles.auditCard}>
+                <div>
+                  <strong>{String(item.action || "").replaceAll("_", " ")}</strong>
+                  <p style={styles.muted}>{item.notes || "-"}</p>
+                </div>
+                <span style={styles.auditTime}>{formatDate(item.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section style={styles.card}>
         <h2 style={styles.sectionTitle}>Quarter Data Reference</h2>
 
         <p style={styles.muted}>
-          For now this page reads current quarter records for reconciliation.
-          Original quarter editing remains blocked after final submission. Next
-          step will add controlled amendment adjustment records.
+          This page currently compares the original locked snapshot against
+          current records. The next step will add controlled amendment adjustment
+          records so original quarter data remains untouched.
         </p>
 
         <div style={styles.tableWrap}>
@@ -648,6 +1050,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     cursor: "not-allowed",
   },
+  smallButton: {
+    border: "1px solid #cbd5e1",
+    background: "white",
+    color: "#111827",
+    padding: "7px 10px",
+    borderRadius: "10px",
+    fontWeight: 800,
+    cursor: "pointer",
+    fontSize: "12px",
+  },
   message: {
     background: "#eef6ff",
     border: "1px solid #bfdbfe",
@@ -713,6 +1125,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     color: "#b91c1c",
   },
+  passText: {
+    color: "#15803d",
+    fontWeight: 900,
+  },
+  failText: {
+    color: "#b91c1c",
+    fontWeight: 900,
+  },
   twoCol: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
@@ -760,7 +1180,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   actionGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
     gap: "12px",
   },
   blueButton: {
@@ -784,6 +1204,24 @@ const styles: Record<string, React.CSSProperties> = {
   amberButton: {
     border: "none",
     background: "#b45309",
+    color: "white",
+    padding: "12px",
+    borderRadius: "12px",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  slateButton: {
+    border: "none",
+    background: "#475569",
+    color: "white",
+    padding: "12px",
+    borderRadius: "12px",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  purpleButton: {
+    border: "none",
+    background: "#7e22ce",
     color: "white",
     padding: "12px",
     borderRadius: "12px",
@@ -819,6 +1257,47 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#3730a3",
     fontWeight: 800,
     fontSize: "12px",
+  },
+  rowActions: {
+    display: "flex",
+    gap: "8px",
+    flexWrap: "wrap",
+  },
+  jsonHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "16px",
+    alignItems: "flex-start",
+    marginBottom: "14px",
+  },
+  jsonBox: {
+    margin: 0,
+    background: "#0f172a",
+    color: "#e5e7eb",
+    padding: "18px",
+    borderRadius: "14px",
+    overflowX: "auto",
+    maxHeight: "520px",
+    fontSize: "13px",
+    lineHeight: 1.5,
+  },
+  auditList: {
+    display: "grid",
+    gap: "12px",
+  },
+  auditCard: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "16px",
+    border: "1px solid #e5e7eb",
+    borderRadius: "14px",
+    padding: "14px",
+    background: "#fbfdff",
+  },
+  auditTime: {
+    color: "#64748b",
+    fontSize: "13px",
+    whiteSpace: "nowrap",
   },
   monospace: {
     fontFamily:
