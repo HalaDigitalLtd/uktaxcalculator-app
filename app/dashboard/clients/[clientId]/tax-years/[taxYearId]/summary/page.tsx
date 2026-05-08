@@ -7,6 +7,19 @@ import { supabase } from "../../../../../../../lib/supabaseClient";
 
 type Row = Record<string, any>;
 
+const ACTIVE_AMENDMENT_STATUSES = [
+  "draft",
+  "in_progress",
+  "in_review",
+  "approved",
+  "locked",
+  "ready_to_submit",
+];
+
+function normalise(value: any) {
+  return String(value || "").toLowerCase().trim();
+}
+
 export default function TaxYearSummaryPage() {
   const params = useParams();
   const clientId = params.clientId as string;
@@ -17,6 +30,7 @@ export default function TaxYearSummaryPage() {
   const [quarters, setQuarters] = useState<Row[]>([]);
   const [workflow, setWorkflow] = useState<Row | null>(null);
   const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
+  const [amendments, setAmendments] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
 
@@ -117,6 +131,21 @@ export default function TaxYearSummaryPage() {
       .limit(20);
 
     setSubmissionLogs(logs || []);
+
+    const { data: amendmentRows, error: amendmentError } = await supabase
+      .from("tax_year_amendments")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .order("created_at", { ascending: false });
+
+    if (amendmentError) {
+      setMessage(`Amendment load error: ${amendmentError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    setAmendments(amendmentRows || []);
     setLoading(false);
   };
 
@@ -155,9 +184,13 @@ export default function TaxYearSummaryPage() {
 
   const preparedQuarters = useMemo(() => {
     return quarters.filter((q) =>
-      ["prepared", "submitted", "finalised", "accepted", "ready_to_submit"].includes(
-        String(q.status || "").toLowerCase()
-      )
+      [
+        "prepared",
+        "submitted",
+        "finalised",
+        "accepted",
+        "ready_to_submit",
+      ].includes(normalise(q.status))
     ).length;
   }, [quarters]);
 
@@ -199,6 +232,29 @@ export default function TaxYearSummaryPage() {
     workflow?.submitted_at ||
     latestSubmissionLog?.created_at ||
     null;
+
+  const activeAmendment = useMemo(() => {
+    return (
+      amendments.find((a) =>
+        ACTIVE_AMENDMENT_STATUSES.includes(normalise(a.status))
+      ) || null
+    );
+  }, [amendments]);
+
+  const submittedAmendments = useMemo(() => {
+    return amendments.filter((a) =>
+      ["submitted", "accepted", "hmrc_submitted"].includes(normalise(a.status))
+    );
+  }, [amendments]);
+
+  const originalSnapshotIncome = activeAmendment?.annual_income_snapshot;
+  const originalSnapshotExpenses = activeAmendment?.annual_expenses_snapshot;
+  const originalSnapshotProfit = activeAmendment?.annual_profit_snapshot;
+
+  const hasSnapshot =
+    originalSnapshotIncome !== undefined ||
+    originalSnapshotExpenses !== undefined ||
+    originalSnapshotProfit !== undefined;
 
   if (loading) {
     return (
@@ -259,6 +315,28 @@ export default function TaxYearSummaryPage() {
             Normal quarter editing is blocked from this summary page to prevent
             accidental post-submission changes.
           </p>
+        </section>
+      )}
+
+      {activeAmendment && (
+        <section style={styles.amendmentBanner}>
+          <h2 style={styles.amendmentTitle}>
+            Active amendment draft #{activeAmendment.amendment_number || "-"}
+          </h2>
+          <p style={styles.amendmentText}>
+            A post-submission amendment is currently open. The original Final
+            Declaration remains locked and preserved. Any correction should be
+            continued through the amendment workflow, not by editing original
+            quarter records.
+          </p>
+          <div style={styles.amendmentActions}>
+            <Link
+              href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/final-declaration`}
+              style={styles.amendmentButton}
+            >
+              Continue amendment workflow
+            </Link>
+          </div>
         </section>
       )}
 
@@ -381,9 +459,109 @@ export default function TaxYearSummaryPage() {
               <span>HMRC final declaration submitted</span>
               <strong>{submitted ? "Yes" : "No"}</strong>
             </div>
+
+            <div style={styles.checkRow}>
+              <span>Active amendment draft</span>
+              <strong>{activeAmendment ? "Yes" : "No"}</strong>
+            </div>
           </div>
         </div>
       </section>
+
+      {taxYearIsImmutable && (
+        <section style={styles.card}>
+          <h2 style={styles.sectionTitle}>Amendment Control</h2>
+
+          <div style={styles.amendmentGrid}>
+            <div style={styles.amendmentInfoBox}>
+              <span style={styles.statLabel}>Active amendment</span>
+              <strong style={activeAmendment ? styles.passValue : styles.statValue}>
+                {activeAmendment
+                  ? `#${activeAmendment.amendment_number || "-"}`
+                  : "None"}
+              </strong>
+            </div>
+
+            <div style={styles.amendmentInfoBox}>
+              <span style={styles.statLabel}>Submitted amendments</span>
+              <strong style={styles.statValue}>{submittedAmendments.length}</strong>
+            </div>
+
+            <div style={styles.amendmentInfoBox}>
+              <span style={styles.statLabel}>Original evidence</span>
+              <strong style={styles.passText}>Preserved</strong>
+            </div>
+          </div>
+
+          {hasSnapshot && (
+            <div style={styles.snapshotBox}>
+              <h3 style={styles.snapshotTitle}>Original snapshot at amendment start</h3>
+              <div style={styles.snapshotGrid}>
+                <div>
+                  <span style={styles.miniLabel}>Original income</span>
+                  <strong>{money(originalSnapshotIncome)}</strong>
+                </div>
+                <div>
+                  <span style={styles.miniLabel}>Original expenses</span>
+                  <strong>{money(originalSnapshotExpenses)}</strong>
+                </div>
+                <div>
+                  <span style={styles.miniLabel}>Original profit</span>
+                  <strong>{money(originalSnapshotProfit)}</strong>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {amendments.length === 0 ? (
+            <p style={styles.muted}>
+              No amendments created yet. Start one from the locked Final
+              Declaration page.
+            </p>
+          ) : (
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Amendment</th>
+                    <th style={styles.th}>Status</th>
+                    <th style={styles.th}>Created</th>
+                    <th style={styles.th}>Original submission</th>
+                    <th style={styles.th}>Amendment submission</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {amendments.map((a) => (
+                    <tr key={a.id}>
+                      <td style={styles.td}>
+                        <strong>#{a.amendment_number || "-"}</strong>
+                      </td>
+                      <td style={styles.td}>
+                        <span style={styles.badge}>{a.status || "draft"}</span>
+                      </td>
+                      <td style={styles.td}>
+                        {a.created_at
+                          ? new Date(a.created_at).toLocaleString()
+                          : "-"}
+                      </td>
+                      <td style={styles.td}>
+                        <span style={styles.monospace}>
+                          {a.original_hmrc_submission_id || hmrcSubmissionId || "-"}
+                        </span>
+                      </td>
+                      <td style={styles.td}>
+                        <span style={styles.monospace}>
+                          {a.hmrc_submission_id || "Not submitted"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
 
       <section style={styles.card}>
         <h2 style={styles.sectionTitle}>Quarterly Breakdown</h2>
@@ -616,6 +794,42 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "14px",
     color: "#92400e",
   },
+  amendmentBanner: {
+    background: "#ecfdf5",
+    border: "1px solid #10b981",
+    color: "#064e3b",
+    padding: "20px",
+    borderRadius: "18px",
+    marginBottom: "20px",
+    boxShadow: "0 10px 25px rgba(6, 95, 70, 0.08)",
+  },
+  amendmentTitle: {
+    margin: "0 0 8px",
+    fontSize: "22px",
+    fontWeight: 900,
+  },
+  amendmentText: {
+    margin: "0 0 14px",
+    fontSize: "15px",
+    lineHeight: 1.6,
+    fontWeight: 700,
+  },
+  amendmentActions: {
+    display: "flex",
+    gap: "12px",
+    flexWrap: "wrap",
+  },
+  amendmentButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#0f766e",
+    color: "white",
+    textDecoration: "none",
+    padding: "10px 14px",
+    borderRadius: "12px",
+    fontWeight: 900,
+  },
   statsGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
@@ -640,6 +854,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   statValue: {
     fontSize: "24px",
+    fontWeight: 900,
+  },
+  passValue: {
+    fontSize: "24px",
+    fontWeight: 900,
+    color: "#15803d",
+  },
+  passText: {
+    color: "#15803d",
     fontWeight: 900,
   },
   twoCol: {
@@ -713,6 +936,35 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "16px",
     borderBottom: "1px solid #e5e7eb",
     paddingBottom: "10px",
+  },
+  amendmentGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "14px",
+    marginBottom: "18px",
+  },
+  amendmentInfoBox: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: "16px",
+    padding: "16px",
+  },
+  snapshotBox: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: "16px",
+    padding: "16px",
+    marginBottom: "18px",
+  },
+  snapshotTitle: {
+    margin: "0 0 12px",
+    fontSize: "16px",
+    fontWeight: 900,
+  },
+  snapshotGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "12px",
   },
   tableWrap: {
     overflowX: "auto",
