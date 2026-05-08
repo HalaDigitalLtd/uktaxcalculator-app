@@ -64,6 +64,7 @@ export default function FinalDeclarationPage() {
   const [taxYear, setTaxYear] = useState<Row | null>(null);
   const [quarters, setQuarters] = useState<Row[]>([]);
   const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
+  const [amendments, setAmendments] = useState<Row[]>([]);
   const [selectedLog, setSelectedLog] = useState<Row | null>(null);
   const [viewerMode, setViewerMode] = useState<
     "request" | "response" | "headers" | null
@@ -137,6 +138,10 @@ export default function FinalDeclarationPage() {
     quarters.length > 0 && preparedCount === quarters.length;
 
   const hasAnnualTotals = totals.income > 0 || totals.expenses > 0;
+
+  const taxYearIsImmutable = Boolean(
+    workflow.submitted || workflow.locked || workflow.status === "submitted"
+  );
 
   const readyToSubmit =
     hasAnnualTotals &&
@@ -290,7 +295,7 @@ export default function FinalDeclarationPage() {
       status: row.status || "not_initialised",
       reviewState: row.review_state || "not_started",
       approved: Boolean(row.approved),
-      locked: Boolean(row.locked),
+      locked: Boolean(row.locked || row.is_locked),
       submitted: Boolean(row.submitted || row.status === "submitted"),
       submittedAt: row.submitted_at || null,
       hmrcSubmissionId: row.hmrc_submission_id || null,
@@ -384,6 +389,16 @@ export default function FinalDeclarationPage() {
       .limit(20);
 
     setSubmissionLogs(logs || []);
+
+    const { data: amendmentRows } = await supabase
+      .from("tax_year_amendments")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .order("created_at", { ascending: false });
+
+    setAmendments(amendmentRows || []);
+
     setLoading(false);
   };
 
@@ -391,6 +406,64 @@ export default function FinalDeclarationPage() {
     if (clientId && taxYearId) loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId]);
+
+  const startAmendmentDraft = async () => {
+    if (!client || !taxYear) {
+      setMessage("Client or tax year not loaded.");
+      return;
+    }
+
+    if (!workflow.id || !taxYearIsImmutable) {
+      setMessage(
+        "Amendment can only be started after the original Final Declaration has been submitted or locked."
+      );
+      return;
+    }
+
+    setActionLoading(true);
+    setMessage("Creating amendment draft...");
+
+    const nextNumber =
+      amendments.length === 0
+        ? 1
+        : Math.max(...amendments.map((a) => Number(a.amendment_number || 0))) + 1;
+
+    const { error } = await supabase.from("tax_year_amendments").insert({
+      firm_id: client.firm_id || null,
+      client_id: client.id,
+      tax_year_id: taxYear.id,
+      original_final_declaration_id: workflow.id,
+      amendment_number: nextNumber,
+      status: "draft",
+      reason: "Post-submission amendment draft created from Final Declaration page.",
+      created_by: userId || null,
+      locked: false,
+    });
+
+    if (error) {
+      setMessage(`Amendment creation failed: ${error.message}`);
+      setActionLoading(false);
+      return;
+    }
+
+    const previous = { ...workflow };
+    const next = addLocalAudit(
+      { ...workflow },
+      "create_amendment_draft",
+      `Amendment draft ${nextNumber} created. Original HMRC evidence remains unchanged.`
+    );
+
+    await saveAuditToDb(
+      "create_amendment_draft",
+      `Amendment draft ${nextNumber} created. Original HMRC evidence remains unchanged.`,
+      previous,
+      next
+    );
+
+    setMessage(`Amendment draft ${nextNumber} created successfully.`);
+    await loadData();
+    setActionLoading(false);
+  };
 
   const doAction = async (action: string) => {
     setActionLoading(true);
@@ -400,6 +473,14 @@ export default function FinalDeclarationPage() {
     let next: WorkflowState = { ...workflow };
     let auditAction = action;
     let auditNotes = "";
+
+    if (workflow.submitted && action !== "submit") {
+      setMessage(
+        "This Final Declaration has already been submitted. Original workflow is locked. Use amendment workflow instead."
+      );
+      setActionLoading(false);
+      return;
+    }
 
     if (action === "initialise") {
       next.status = "in_progress";
@@ -494,6 +575,7 @@ export default function FinalDeclarationPage() {
       next.status = "submitted";
       next.reviewState = "submitted_to_hmrc";
       next.submitted = true;
+      next.locked = true;
       next.submittedAt = new Date().toISOString();
       next.hmrcSubmissionId = result.hmrcSubmissionId || null;
       next.hmrcCorrelationId = result.hmrcCorrelationId || null;
@@ -525,6 +607,11 @@ export default function FinalDeclarationPage() {
   };
 
   const retrySubmission = async (log: Row) => {
+    if (String(log.status || "").toLowerCase() !== "failed") {
+      setMessage("Retry is only allowed for failed submission logs.");
+      return;
+    }
+
     setActionLoading(true);
     setMessage("");
 
@@ -648,14 +735,39 @@ export default function FinalDeclarationPage() {
           <button
             onClick={() => doAction("initialise")}
             disabled={actionLoading || workflow.submitted}
-            style={styles.primaryButton}
+            style={workflow.submitted ? styles.disabledButton : styles.primaryButton}
           >
-            Initialise / Refresh
+            {workflow.submitted ? "Locked" : "Initialise / Refresh"}
           </button>
+
+          {taxYearIsImmutable && (
+            <button
+              onClick={startAmendmentDraft}
+              disabled={actionLoading}
+              style={styles.amendmentButton}
+            >
+              Start Amendment Draft
+            </button>
+          )}
         </div>
       </div>
 
       {message && <div style={styles.message}>{message}</div>}
+
+      {taxYearIsImmutable && (
+        <section style={styles.lockBanner}>
+          <h2 style={styles.lockTitle}>Original Final Declaration locked</h2>
+          <p style={styles.lockText}>
+            This original workflow is locked to preserve HMRC submission
+            evidence. Submission IDs, correlation IDs, request payloads,
+            response payloads and audit history must not be overwritten.
+          </p>
+          <p style={styles.lockMeta}>
+            Use the separate amendment workflow for any post-submission
+            correction.
+          </p>
+        </section>
+      )}
 
       <section style={styles.statsGrid}>
         <div style={styles.statCard}>
@@ -685,7 +797,7 @@ export default function FinalDeclarationPage() {
         <div style={styles.card}>
           <h2 style={styles.sectionTitle}>Workflow Status</h2>
 
-          <div style={styles.statusBox}>
+          <div style={taxYearIsImmutable ? styles.lockedStatusBox : styles.statusBox}>
             <span style={styles.statLabel}>Current state</span>
             <strong style={styles.statusValue}>
               {String(workflow.status).replaceAll("_", " ")}
@@ -756,6 +868,68 @@ export default function FinalDeclarationPage() {
           </div>
         </div>
       </section>
+
+      {taxYearIsImmutable && (
+        <section style={styles.card}>
+          <h2 style={styles.sectionTitle}>Amendment Workflow</h2>
+
+          <p style={styles.muted}>
+            Amendments are stored separately from the original Final Declaration.
+            This protects the original HMRC submission evidence while allowing
+            controlled post-submission corrections.
+          </p>
+
+          <div style={styles.viewerQuickActions}>
+            <button
+              type="button"
+              onClick={startAmendmentDraft}
+              disabled={actionLoading}
+              style={styles.amendmentButton}
+            >
+              Start Amendment Draft
+            </button>
+          </div>
+
+          {amendments.length === 0 ? (
+            <p style={styles.amendmentEmpty}>No amendment drafts created yet.</p>
+          ) : (
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Amendment</th>
+                    <th style={styles.th}>Status</th>
+                    <th style={styles.th}>Reason</th>
+                    <th style={styles.th}>Created</th>
+                    <th style={styles.th}>HMRC Submission</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {amendments.map((a) => (
+                    <tr key={a.id}>
+                      <td style={styles.td}>
+                        <strong>#{a.amendment_number || "-"}</strong>
+                      </td>
+                      <td style={styles.td}>{statusBadge(a.status)}</td>
+                      <td style={styles.td}>{a.reason || "-"}</td>
+                      <td style={styles.td}>
+                        {a.created_at
+                          ? new Date(a.created_at).toLocaleString()
+                          : "-"}
+                      </td>
+                      <td style={styles.td}>
+                        <span style={styles.monospace}>
+                          {a.hmrc_submission_id || "Not submitted"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
 
       {(workflow.hmrcSubmissionId ||
         workflow.hmrcCorrelationId ||
@@ -832,7 +1006,7 @@ export default function FinalDeclarationPage() {
           <button
             onClick={() => doAction("submit_for_review")}
             disabled={actionLoading || workflow.locked || workflow.submitted}
-            style={styles.blueButton}
+            style={workflow.submitted ? styles.disabledButton : styles.blueButton}
           >
             Submit for Accountant Review
           </button>
@@ -840,7 +1014,7 @@ export default function FinalDeclarationPage() {
           <button
             onClick={() => doAction("approve")}
             disabled={actionLoading || workflow.locked || workflow.submitted}
-            style={styles.greenButton}
+            style={workflow.submitted ? styles.disabledButton : styles.greenButton}
           >
             Accountant Approve
           </button>
@@ -848,7 +1022,7 @@ export default function FinalDeclarationPage() {
           <button
             onClick={() => doAction("unapprove")}
             disabled={actionLoading || workflow.locked || workflow.submitted}
-            style={styles.yellowButton}
+            style={workflow.submitted ? styles.disabledButton : styles.yellowButton}
           >
             Remove Approval
           </button>
@@ -856,7 +1030,7 @@ export default function FinalDeclarationPage() {
           <button
             onClick={() => doAction("lock")}
             disabled={actionLoading || workflow.locked || workflow.submitted}
-            style={styles.amberButton}
+            style={workflow.submitted ? styles.disabledButton : styles.amberButton}
           >
             Lock Annual Declaration
           </button>
@@ -864,7 +1038,7 @@ export default function FinalDeclarationPage() {
           <button
             onClick={() => doAction("unlock")}
             disabled={actionLoading || !workflow.locked || workflow.submitted}
-            style={styles.slateButton}
+            style={workflow.submitted ? styles.disabledButton : styles.slateButton}
           >
             Unlock
           </button>
@@ -872,9 +1046,13 @@ export default function FinalDeclarationPage() {
           <button
             onClick={() => doAction("submit")}
             disabled={actionLoading || !readyToSubmit || workflow.submitted}
-            style={styles.purpleButton}
+            style={workflow.submitted ? styles.disabledButton : styles.purpleButton}
           >
-            {actionLoading ? "Submitting..." : "Submit Final Declaration"}
+            {workflow.submitted
+              ? "Already Submitted"
+              : actionLoading
+              ? "Submitting..."
+              : "Submit Final Declaration"}
           </button>
         </div>
       </section>
@@ -1141,6 +1319,24 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: "pointer",
   },
+  disabledButton: {
+    border: "1px solid #d1d5db",
+    background: "#e5e7eb",
+    color: "#6b7280",
+    padding: "12px 18px",
+    borderRadius: "12px",
+    fontWeight: 900,
+    cursor: "not-allowed",
+  },
+  amendmentButton: {
+    border: "none",
+    background: "#0f766e",
+    color: "white",
+    padding: "12px 18px",
+    borderRadius: "12px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
   smallButton: {
     border: "1px solid #cbd5e1",
     background: "white",
@@ -1169,6 +1365,31 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "14px",
     marginBottom: "20px",
     fontWeight: 700,
+  },
+  lockBanner: {
+    background: "#fffbeb",
+    border: "1px solid #f59e0b",
+    color: "#78350f",
+    padding: "20px",
+    borderRadius: "18px",
+    marginBottom: "20px",
+    boxShadow: "0 10px 25px rgba(146, 64, 14, 0.08)",
+  },
+  lockTitle: {
+    margin: "0 0 8px",
+    fontSize: "22px",
+    fontWeight: 900,
+  },
+  lockText: {
+    margin: "0 0 8px",
+    fontSize: "15px",
+    lineHeight: 1.6,
+    fontWeight: 700,
+  },
+  lockMeta: {
+    margin: 0,
+    fontSize: "14px",
+    color: "#92400e",
   },
   statsGrid: {
     display: "grid",
@@ -1231,9 +1452,17 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "18px",
     marginBottom: "16px",
   },
+  lockedStatusBox: {
+    background: "#fffbeb",
+    border: "1px solid #f59e0b",
+    borderRadius: "16px",
+    padding: "18px",
+    marginBottom: "16px",
+  },
   statusValue: {
     fontSize: "22px",
     fontWeight: 900,
+    textTransform: "capitalize",
   },
   checkList: {
     display: "grid",
@@ -1313,6 +1542,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tableWrap: {
     overflowX: "auto",
+    marginTop: "18px",
   },
   table: {
     width: "100%",
@@ -1342,6 +1572,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   muted: {
     margin: 0,
+    color: "#64748b",
+    fontSize: "14px",
+  },
+  amendmentEmpty: {
+    margin: "18px 0 0",
     color: "#64748b",
     fontSize: "14px",
   },
