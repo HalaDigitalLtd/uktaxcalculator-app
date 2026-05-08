@@ -50,6 +50,11 @@ function formatDate(value: any) {
   }
 }
 
+function sourceLabel(value: any) {
+  const clean = String(value || "unknown").replaceAll("-", " ");
+  return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export default function TaxYearSummaryPage() {
   const params = useParams();
   const clientId = String(params.clientId || "");
@@ -58,6 +63,7 @@ export default function TaxYearSummaryPage() {
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
   const [quarters, setQuarters] = useState<Row[]>([]);
+  const [quarterIncomeSources, setQuarterIncomeSources] = useState<Row[]>([]);
   const [workflow, setWorkflow] = useState<Row | null>(null);
   const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
   const [amendments, setAmendments] = useState<Row[]>([]);
@@ -131,6 +137,21 @@ export default function TaxYearSummaryPage() {
 
     setQuarters(quarterData || []);
 
+    const { data: sourceRows, error: sourceError } = await supabase
+      .from("quarter_income_sources")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .order("period_start", { ascending: true });
+
+    if (sourceError) {
+      setMessage(`Income source load error: ${sourceError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    setQuarterIncomeSources(sourceRows || []);
+
     const { data: workflowData } = await supabase
       .from("tax_year_final_declarations")
       .select("*")
@@ -173,48 +194,91 @@ export default function TaxYearSummaryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId]);
 
+  const sourceRowsByQuarter = useMemo(() => {
+    const grouped: Record<string, Row[]> = {};
+
+    quarterIncomeSources.forEach((row) => {
+      const quarterId = String(row.quarter_id || "");
+      if (!grouped[quarterId]) grouped[quarterId] = [];
+      grouped[quarterId].push(row);
+    });
+
+    return grouped;
+  }, [quarterIncomeSources]);
+
+  const distinctIncomeSources = useMemo(() => {
+    return Array.from(
+      new Set(quarterIncomeSources.map((row) => String(row.hmrc_source || "")))
+    ).filter(Boolean);
+  }, [quarterIncomeSources]);
+
   const totals = useMemo(() => {
     let income = 0;
     let expenses = 0;
 
-    quarters.forEach((q) => {
-      income += amount(q, [
-        "income",
-        "income_total",
-        "total_income",
-        "turnover",
-        "sales",
-      ]);
-
-      expenses += amount(q, [
-        "expenses",
-        "expense_total",
-        "total_expenses",
-        "allowable_expenses",
-      ]);
-    });
+    if (quarterIncomeSources.length > 0) {
+      quarterIncomeSources.forEach((row) => {
+        income += amount(row, ["income"]);
+        expenses += amount(row, ["expenses"]);
+      });
+    } else {
+      quarters.forEach((q) => {
+        income += amount(q, ["income", "turnover", "sales"]);
+        expenses += amount(q, ["expenses", "allowable_expenses"]);
+      });
+    }
 
     return {
       income,
       expenses,
       profit: income - expenses,
     };
-  }, [quarters]);
+  }, [quarters, quarterIncomeSources]);
 
-  const preparedQuarters = useMemo(() => {
-    return quarters.filter((q) =>
+  const preparedSourceRows = useMemo(() => {
+    return quarterIncomeSources.filter((row) =>
       [
         "prepared",
         "submitted",
         "finalised",
         "accepted",
         "ready_to_submit",
-      ].includes(normalise(q.status))
+      ].includes(normalise(row.status))
     ).length;
-  }, [quarters]);
+  }, [quarterIncomeSources]);
+
+  const preparedQuarters = useMemo(() => {
+    return quarters.filter((q) => {
+      const sourceRows = sourceRowsByQuarter[q.id] || [];
+
+      if (sourceRows.length > 0) {
+        return sourceRows.every((row) =>
+          [
+            "prepared",
+            "submitted",
+            "finalised",
+            "accepted",
+            "ready_to_submit",
+          ].includes(normalise(row.status))
+        );
+      }
+
+      return [
+        "prepared",
+        "submitted",
+        "finalised",
+        "accepted",
+        "ready_to_submit",
+      ].includes(normalise(q.status));
+    }).length;
+  }, [quarters, sourceRowsByQuarter]);
 
   const allQuartersPrepared =
     quarters.length > 0 && preparedQuarters === quarters.length;
+
+  const allIncomeSourcesPrepared =
+    quarterIncomeSources.length > 0 &&
+    preparedSourceRows === quarterIncomeSources.length;
 
   const latestSubmissionLog = submissionLogs[0] || null;
 
@@ -422,8 +486,12 @@ export default function TaxYearSummaryPage() {
           <p style={styles.subtitle}>
             HMRC:{" "}
             <strong>{client?.hmrc_connected ? "Connected" : "Not connected"}</strong>{" "}
-            · Income source:{" "}
-            <strong>{client?.hmrc_income_source_type || "Not set"}</strong>
+            · Income sources:{" "}
+            <strong>
+              {distinctIncomeSources.length > 0
+                ? distinctIncomeSources.map(sourceLabel).join(", ")
+                : client?.hmrc_income_source_type || "Not set"}
+            </strong>
           </p>
         </div>
 
@@ -501,11 +569,40 @@ export default function TaxYearSummaryPage() {
         </div>
 
         <div style={styles.statCard}>
-          <span style={styles.statLabel}>Quarter readiness</span>
+          <span style={styles.statLabel}>Source readiness</span>
           <strong style={styles.statValue}>
-            {preparedQuarters}/{quarters.length}
+            {quarterIncomeSources.length > 0
+              ? `${preparedSourceRows}/${quarterIncomeSources.length}`
+              : `${preparedQuarters}/${quarters.length}`}
           </strong>
         </div>
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>HMRC Source Model</h2>
+
+        <div style={styles.sourceModelGrid}>
+          <div style={styles.sourceModelBox}>
+            <span style={styles.statLabel}>Reporting quarters</span>
+            <strong style={styles.statValue}>{quarters.length}</strong>
+          </div>
+
+          <div style={styles.sourceModelBox}>
+            <span style={styles.statLabel}>Income source types</span>
+            <strong style={styles.statValue}>{distinctIncomeSources.length}</strong>
+          </div>
+
+          <div style={styles.sourceModelBox}>
+            <span style={styles.statLabel}>HMRC obligation mappings</span>
+            <strong style={styles.statValue}>{quarterIncomeSources.length}</strong>
+          </div>
+        </div>
+
+        <p style={styles.sourceNote}>
+          Quarters are reporting-period shells. HMRC obligations and figures are
+          tracked per income source, because one quarter may contain multiple
+          sources such as self-employment, UK property or foreign property.
+        </p>
       </section>
 
       <section style={styles.twoCol}>
@@ -578,6 +675,16 @@ export default function TaxYearSummaryPage() {
             <div style={styles.checkRow}>
               <span>Quarter records created</span>
               <strong>{quarters.length > 0 ? "Yes" : "No"}</strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>Income-source rows created</span>
+              <strong>{quarterIncomeSources.length > 0 ? "Yes" : "No"}</strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>All source rows prepared</span>
+              <strong>{allIncomeSourcesPrepared ? "Yes" : "No"}</strong>
             </div>
 
             <div style={styles.checkRow}>
@@ -741,31 +848,47 @@ export default function TaxYearSummaryPage() {
                 <tr>
                   <th style={styles.th}>Quarter</th>
                   <th style={styles.th}>Period</th>
-                  <th style={styles.th}>Status</th>
+                  <th style={styles.th}>Quarter status</th>
+                  <th style={styles.th}>Income sources</th>
                   <th style={styles.th}>Income</th>
                   <th style={styles.th}>Expenses</th>
                   <th style={styles.th}>Profit</th>
-                  <th style={styles.th}>HMRC obligation</th>
+                  <th style={styles.th}>HMRC mappings</th>
                   <th style={styles.th}>Action</th>
                 </tr>
               </thead>
 
               <tbody>
                 {quarters.map((q) => {
-                  const income = amount(q, [
-                    "income",
-                    "income_total",
-                    "total_income",
-                    "turnover",
-                    "sales",
-                  ]);
+                  const sourceRows = sourceRowsByQuarter[q.id] || [];
 
-                  const expenses = amount(q, [
-                    "expenses",
-                    "expense_total",
-                    "total_expenses",
-                    "allowable_expenses",
-                  ]);
+                  const income =
+                    sourceRows.length > 0
+                      ? sourceRows.reduce(
+                          (sum, row) => sum + amount(row, ["income"]),
+                          0
+                        )
+                      : amount(q, ["income", "turnover", "sales"]);
+
+                  const expenses =
+                    sourceRows.length > 0
+                      ? sourceRows.reduce(
+                          (sum, row) => sum + amount(row, ["expenses"]),
+                          0
+                        )
+                      : amount(q, ["expenses", "allowable_expenses"]);
+
+                  const sourcePrepared =
+                    sourceRows.length > 0 &&
+                    sourceRows.every((row) =>
+                      [
+                        "prepared",
+                        "submitted",
+                        "finalised",
+                        "accepted",
+                        "ready_to_submit",
+                      ].includes(normalise(row.status))
+                    );
 
                   return (
                     <tr key={q.id}>
@@ -779,8 +902,32 @@ export default function TaxYearSummaryPage() {
 
                       <td style={styles.td}>
                         <span style={styles.badge}>
-                          {q.status || "not_started"}
+                          {sourceRows.length > 0
+                            ? sourcePrepared
+                              ? "prepared"
+                              : "source review"
+                            : q.status || "not_started"}
                         </span>
+                      </td>
+
+                      <td style={styles.td}>
+                        {sourceRows.length === 0 ? (
+                          <span style={styles.muted}>No source rows</span>
+                        ) : (
+                          <div style={styles.sourceStack}>
+                            {sourceRows.map((row) => (
+                              <div key={row.id} style={styles.sourceLine}>
+                                <span style={styles.sourcePill}>
+                                  {sourceLabel(row.hmrc_source)}
+                                </span>
+                                <span style={styles.sourceMeta}>
+                                  {row.hmrc_business_id || "No business ID"} ·{" "}
+                                  {row.status || "not_started"}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </td>
 
                       <td style={styles.td}>{toMoney(income)}</td>
@@ -790,7 +937,7 @@ export default function TaxYearSummaryPage() {
                       </td>
 
                       <td style={styles.td}>
-                        {q.obligation_id ? "Linked" : "None linked"}
+                        <strong>{sourceRows.length}</strong>
                       </td>
 
                       <td style={styles.td}>
@@ -1040,6 +1187,25 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#15803d",
     fontWeight: 900,
   },
+  sourceModelGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "14px",
+    marginBottom: "14px",
+  },
+  sourceModelBox: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: "16px",
+    padding: "16px",
+  },
+  sourceNote: {
+    margin: 0,
+    color: "#475569",
+    fontSize: "14px",
+    lineHeight: 1.6,
+    fontWeight: 700,
+  },
   twoCol: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
@@ -1182,6 +1348,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "12px",
     borderBottom: "1px solid #e5e7eb",
     whiteSpace: "nowrap",
+    verticalAlign: "top",
   },
   badge: {
     display: "inline-flex",
@@ -1191,6 +1358,30 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#3730a3",
     fontWeight: 800,
     fontSize: "12px",
+  },
+  sourceStack: {
+    display: "grid",
+    gap: "8px",
+  },
+  sourceLine: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap",
+  },
+  sourcePill: {
+    display: "inline-flex",
+    padding: "5px 9px",
+    borderRadius: "999px",
+    background: "#ecfeff",
+    color: "#155e75",
+    fontWeight: 900,
+    fontSize: "12px",
+  },
+  sourceMeta: {
+    color: "#64748b",
+    fontSize: "12px",
+    fontWeight: 700,
   },
   smallButton: {
     display: "inline-flex",
