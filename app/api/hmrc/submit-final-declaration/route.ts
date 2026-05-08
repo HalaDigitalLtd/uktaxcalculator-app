@@ -7,6 +7,7 @@ import {
   getAuthenticatedUserFromRequest,
   assertTaxYearAccess,
 } from "../../../../lib/hmrc/tenantSecurity";
+import { requireFirmPermission } from "../../../../lib/rbac";
 
 function money(value: any) {
   const n = Number(value || 0);
@@ -67,11 +68,15 @@ function buildEndpoint(template: string, params: { nino: string; taxYear: string
     .replaceAll(":taxYear", params.taxYear);
 }
 
+function normalise(value: any) {
+  return String(value || "").toLowerCase().trim();
+}
+
 function isFinalDeclarationSubmitted(row: any) {
   if (!row) return false;
 
-  const status = String(row.status || "").toLowerCase();
-  const reviewState = String(row.review_state || "").toLowerCase();
+  const status = normalise(row.status);
+  const reviewState = normalise(row.review_state);
 
   return Boolean(
     row.submitted ||
@@ -86,13 +91,22 @@ function isFinalDeclarationSubmitted(row: any) {
 function isRetryAllowed(row: any) {
   if (!row) return false;
 
-  const status = String(row.status || "").toLowerCase();
-  const reviewState = String(row.review_state || "").toLowerCase();
+  const status = normalise(row.status);
+  const reviewState = normalise(row.review_state);
 
   return status === "submission_failed" || reviewState === "submission_failed";
 }
 
+function isApproved(row: any) {
+  return Boolean(row?.approved);
+}
+
+function isLocked(row: any) {
+  return Boolean(row?.locked || row?.is_locked);
+}
+
 async function insertFinalDeclarationAudit(input: {
+  workflowId?: string | null;
   firmId: string;
   clientId: string;
   taxYearId: string;
@@ -103,9 +117,12 @@ async function insertFinalDeclarationAudit(input: {
   createdBy: string;
   meta?: any;
 }) {
+  const metaPayload = input.meta || {};
+
   const { error } = await supabaseAdmin
     .from("final_declaration_audit_trail")
     .insert({
+      workflow_id: input.workflowId || null,
       firm_id: input.firmId,
       client_id: input.clientId,
       tax_year_id: input.taxYearId,
@@ -114,7 +131,8 @@ async function insertFinalDeclarationAudit(input: {
       to_status: input.toStatus,
       notes: input.notes,
       created_by: input.createdBy,
-      meta: input.meta || {},
+      metadata: metaPayload,
+      meta: metaPayload,
     } as any);
 
   if (error) {
@@ -156,18 +174,44 @@ export async function POST(req: NextRequest) {
       allowHalaAdmin: false,
     });
 
-    const { data: finalDeclaration } = await supabaseAdmin
-      .from("tax_year_final_declarations")
-      .select("*")
-      .eq("firm_id", client.firm_id)
-      .eq("client_id", client.id)
-      .eq("tax_year_id", taxYear.id)
-      .maybeSingle();
+    const userFirmRole = await requireFirmPermission({
+      userId: user.id,
+      firmId: client.firm_id,
+      permission: "hmrc:submit_final",
+    });
+
+    const { data: finalDeclaration, error: finalDeclarationError } =
+      await supabaseAdmin
+        .from("tax_year_final_declarations")
+        .select("*")
+        .eq("firm_id", client.firm_id)
+        .eq("client_id", client.id)
+        .eq("tax_year_id", taxYear.id)
+        .maybeSingle();
+
+    if (finalDeclarationError) {
+      return NextResponse.json(
+        { success: false, error: finalDeclarationError.message },
+        { status: 500 }
+      );
+    }
 
     const fromStatus = finalDeclaration?.status || "not_started";
 
+    if (!finalDeclaration) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Final Declaration workflow has not been created. Initialise, review, approve and lock before submission.",
+        },
+        { status: 400 }
+      );
+    }
+
     if (isFinalDeclarationSubmitted(finalDeclaration)) {
       await insertFinalDeclarationAudit({
+        workflowId: finalDeclaration.id,
         firmId: client.firm_id,
         clientId: client.id,
         taxYearId: taxYear.id,
@@ -186,6 +230,7 @@ export async function POST(req: NextRequest) {
             null,
           retryMode,
           retryOfLogId,
+          userFirmRole,
         },
       });
 
@@ -207,6 +252,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (!isApproved(finalDeclaration)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Final Declaration must be accountant approved before HMRC submission.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (!isLocked(finalDeclaration)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Final Declaration must be locked before HMRC submission.",
+        },
+        { status: 403 }
+      );
+    }
+
     if (retryMode && !isRetryAllowed(finalDeclaration)) {
       return NextResponse.json(
         {
@@ -215,6 +282,20 @@ export async function POST(req: NextRequest) {
             "Retry is only allowed after a failed final declaration submission.",
         },
         { status: 409 }
+      );
+    }
+
+    if (
+      finalDeclaration.approved_by &&
+      String(finalDeclaration.approved_by) === String(user.id)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Segregation of duties failed. The approver cannot be the HMRC submitter.",
+        },
+        { status: 403 }
       );
     }
 
@@ -240,7 +321,7 @@ export async function POST(req: NextRequest) {
 
     const preparedQuarters = safeQuarters.filter((q: any) =>
       ["prepared", "submitted", "accepted", "finalised", "ready_to_submit"].includes(
-        String(q.status || "").toLowerCase()
+        normalise(q.status)
       )
     );
 
@@ -312,6 +393,17 @@ export async function POST(req: NextRequest) {
         income: annualIncome,
         expenses: annualExpenses,
         profit: annualProfit,
+      },
+      workflow: {
+        finalDeclarationId: finalDeclaration.id,
+        status: finalDeclaration.status,
+        reviewState: finalDeclaration.review_state,
+        approved: finalDeclaration.approved,
+        locked: finalDeclaration.locked,
+        approvedBy: finalDeclaration.approved_by || null,
+        lockedBy: finalDeclaration.locked_by || null,
+        submittedBy: user.id,
+        submitterRole: userFirmRole,
       },
       declaration: {
         accepted: true,
@@ -419,41 +511,31 @@ export async function POST(req: NextRequest) {
           attempt_number: attemptNumber,
           is_retry: retryMode,
           created_by: user.id,
+          meta: {
+            userFirmRole,
+            canonicalWorkflowTable: "tax_year_final_declarations",
+          },
         } as any);
 
-        if (finalDeclaration) {
-          await supabaseAdmin
-            .from("tax_year_final_declarations")
-            .update({
-              status: "submission_failed",
-              review_state: "submission_failed",
-              submitted: false,
-              locked: true,
-              last_error:
-                errorMessage || errorCode || "HMRC final declaration failed",
-              retry_count: nextRetryCount,
-            } as any)
-            .eq("id", finalDeclaration.id)
-            .eq("firm_id", client.firm_id)
-            .eq("client_id", client.id)
-            .eq("tax_year_id", taxYear.id);
-        } else {
-          await supabaseAdmin.from("tax_year_final_declarations").insert({
-            firm_id: client.firm_id,
-            client_id: client.id,
-            tax_year_id: taxYear.id,
+        await supabaseAdmin
+          .from("tax_year_final_declarations")
+          .update({
             status: "submission_failed",
             review_state: "submission_failed",
-            approved: true,
-            locked: true,
             submitted: false,
+            locked: true,
             last_error:
               errorMessage || errorCode || "HMRC final declaration failed",
             retry_count: nextRetryCount,
-          } as any);
-        }
+            updated_at: now,
+          } as any)
+          .eq("id", finalDeclaration.id)
+          .eq("firm_id", client.firm_id)
+          .eq("client_id", client.id)
+          .eq("tax_year_id", taxYear.id);
 
         await insertFinalDeclarationAudit({
+          workflowId: finalDeclaration.id,
           firmId: client.firm_id,
           clientId: client.id,
           taxYearId: taxYear.id,
@@ -477,6 +559,7 @@ export async function POST(req: NextRequest) {
             errorMessage:
               errorMessage || errorCode || "HMRC final declaration failed",
             annualTotals: finalPayload.annualTotals,
+            userFirmRole,
           },
         });
 
@@ -515,34 +598,9 @@ export async function POST(req: NextRequest) {
       };
     }
 
-    if (finalDeclaration) {
-      await supabaseAdmin
-        .from("tax_year_final_declarations")
-        .update({
-          status: "submitted",
-          review_state: "submitted_to_hmrc",
-          approved: true,
-          locked: true,
-          submitted: true,
-          submitted_at: now,
-          hmrc_submission_id: hmrcSubmissionId,
-          hmrc_correlation_id: hmrcCorrelationId,
-          hmrc_calculation_id: hmrcCalculationId,
-          hmrc_response_payload: hmrcData,
-          hmrc_response_headers: hmrcHeaders,
-          hmrc_submitted_at: now,
-          last_error: null,
-          retry_count: nextRetryCount,
-        } as any)
-        .eq("id", finalDeclaration.id)
-        .eq("firm_id", client.firm_id)
-        .eq("client_id", client.id)
-        .eq("tax_year_id", taxYear.id);
-    } else {
-      await supabaseAdmin.from("tax_year_final_declarations").insert({
-        firm_id: client.firm_id,
-        client_id: client.id,
-        tax_year_id: taxYear.id,
+    await supabaseAdmin
+      .from("tax_year_final_declarations")
+      .update({
         status: "submitted",
         review_state: "submitted_to_hmrc",
         approved: true,
@@ -557,8 +615,13 @@ export async function POST(req: NextRequest) {
         hmrc_submitted_at: now,
         last_error: null,
         retry_count: nextRetryCount,
-      } as any);
-    }
+        submitted_by: user.id,
+        updated_at: now,
+      } as any)
+      .eq("id", finalDeclaration.id)
+      .eq("firm_id", client.firm_id)
+      .eq("client_id", client.id)
+      .eq("tax_year_id", taxYear.id);
 
     await supabaseAdmin.from("hmrc_submission_logs").insert({
       firm_id: client.firm_id,
@@ -582,9 +645,15 @@ export async function POST(req: NextRequest) {
       attempt_number: attemptNumber,
       is_retry: retryMode,
       created_by: user.id,
+      meta: {
+        userFirmRole,
+        finalDeclarationId: finalDeclaration.id,
+        canonicalWorkflowTable: "tax_year_final_declarations",
+      },
     } as any);
 
     await insertFinalDeclarationAudit({
+      workflowId: finalDeclaration.id,
       firmId: client.firm_id,
       clientId: client.id,
       taxYearId: taxYear.id,
@@ -608,6 +677,7 @@ export async function POST(req: NextRequest) {
         hmrcCalculationId,
         annualTotals: finalPayload.annualTotals,
         quarterCount: safeQuarters.length,
+        userFirmRole,
       },
     });
 
@@ -644,9 +714,13 @@ export async function POST(req: NextRequest) {
       { success: false, error: message },
       {
         status:
-          message === "Unauthorized" || message === "Missing authorization header"
+          message === "Unauthorized" ||
+          message === "Missing authorization header" ||
+          message === "Missing authentication token." ||
+          message === "Invalid or expired authentication token."
             ? 401
-            : message.toLowerCase().includes("access denied")
+            : message.toLowerCase().includes("access denied") ||
+              message.toLowerCase().includes("permission")
             ? 403
             : 500,
       }
