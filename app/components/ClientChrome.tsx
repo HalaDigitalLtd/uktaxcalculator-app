@@ -13,7 +13,12 @@ export default function ClientChrome({
 
   const hideChrome =
     pathname === "/smart-sa-intake" ||
-    pathname.startsWith("/app");
+    pathname.startsWith("/app") ||
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/admin") ||
+    pathname.startsWith("/auth") ||
+    pathname.startsWith("/join") ||
+    pathname.startsWith("/portal");
 
   return (
     <>
