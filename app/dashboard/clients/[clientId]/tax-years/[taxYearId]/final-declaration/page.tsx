@@ -65,9 +65,9 @@ export default function FinalDeclarationPage() {
   const [quarters, setQuarters] = useState<Row[]>([]);
   const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
   const [selectedLog, setSelectedLog] = useState<Row | null>(null);
-  const [viewerMode, setViewerMode] = useState<"request" | "response" | "headers" | null>(
-    null
-  );
+  const [viewerMode, setViewerMode] = useState<
+    "request" | "response" | "headers" | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -81,7 +81,9 @@ export default function FinalDeclarationPage() {
 
   const amount = (row: Row, keys: string[]) => {
     for (const key of keys) {
-      if (row?.[key] !== undefined && row?.[key] !== null) return Number(row[key]);
+      if (row?.[key] !== undefined && row?.[key] !== null) {
+        return Number(row[key]);
+      }
     }
     return 0;
   };
@@ -163,19 +165,6 @@ export default function FinalDeclarationPage() {
     };
   };
 
-  const saveAuditToDb = async (action: string, notes: string) => {
-    if (!client || !taxYear) return;
-
-    await supabase.from("final_declaration_audit_trail").insert({
-      firm_id: client.firm_id,
-      client_id: client.id,
-      tax_year_id: taxYear.id,
-      action,
-      notes,
-      created_by: userId || null,
-    } as any);
-  };
-
   const saveWorkflowToDb = async (next: WorkflowState) => {
     if (!client || !taxYear) return;
 
@@ -198,40 +187,91 @@ export default function FinalDeclarationPage() {
     };
 
     if (next.id) {
-      await supabase
+      const { error } = await supabase
         .from("tax_year_final_declarations")
         .update(payload)
         .eq("id", next.id);
+
+      if (error) {
+        console.error("Workflow update failed:", error);
+      }
     } else {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("tax_year_final_declarations")
         .insert(payload)
         .select("id")
         .single();
 
+      if (error) {
+        console.error("Workflow insert failed:", error);
+      }
+
       if (data?.id) next.id = data.id;
+    }
+  };
+
+  const saveAuditToDb = async (
+    action: string,
+    notes: string,
+    previous: WorkflowState,
+    next: WorkflowState
+  ) => {
+    if (!client || !taxYear) return;
+
+    const payload = {
+      workflow_id: next.id || null,
+      firm_id: client.firm_id,
+      client_id: client.id,
+      tax_year_id: taxYear.id,
+      action,
+      from_status: previous.status || null,
+      to_status: next.status || null,
+      notes,
+      metadata: {
+        review_state_before: previous.reviewState || null,
+        review_state_after: next.reviewState || null,
+        approved_before: previous.approved || false,
+        approved_after: next.approved || false,
+        locked_before: previous.locked || false,
+        locked_after: next.locked || false,
+        submitted_before: previous.submitted || false,
+        submitted_after: next.submitted || false,
+      },
+      created_by: userId || null,
+    };
+
+    const { error } = await supabase
+      .from("final_declaration_audit_trail")
+      .insert(payload as any);
+
+    if (error) {
+      console.error("Audit trail insert failed:", error);
+      setMessage(`Audit trail warning: ${error.message}`);
     }
   };
 
   const saveWorkflow = async (
     next: WorkflowState,
     action: string,
-    notes: string
+    notes: string,
+    previous: WorkflowState
   ) => {
     setWorkflow(next);
     await saveWorkflowToDb(next);
-    await saveAuditToDb(action, notes);
+    await saveAuditToDb(action, notes, previous, next);
   };
 
   const mapDbWorkflow = (row: Row | null, auditRows: Row[]): WorkflowState => {
+    const audit = auditRows.map((a) => ({
+      action: a.action,
+      notes: a.notes,
+      createdAt: a.created_at,
+    }));
+
     if (!row) {
       return {
         ...defaultWorkflow,
-        audit: auditRows.map((a) => ({
-          action: a.action,
-          notes: a.notes,
-          createdAt: a.created_at,
-        })),
+        audit,
       };
     }
 
@@ -248,11 +288,7 @@ export default function FinalDeclarationPage() {
       hmrcCalculationId: row.hmrc_calculation_id || null,
       hmrcSubmittedAt: row.hmrc_submitted_at || null,
       lastError: row.last_error || null,
-      audit: auditRows.map((a) => ({
-        action: a.action,
-        notes: a.notes,
-        createdAt: a.created_at,
-      })),
+      audit,
     };
   };
 
@@ -340,12 +376,14 @@ export default function FinalDeclarationPage() {
 
   useEffect(() => {
     if (clientId && taxYearId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId]);
 
   const doAction = async (action: string) => {
     setActionLoading(true);
     setMessage("");
 
+    const previous: WorkflowState = { ...workflow };
     let next: WorkflowState = { ...workflow };
     let auditAction = action;
     let auditNotes = "";
@@ -451,64 +489,69 @@ export default function FinalDeclarationPage() {
       next.lastError = null;
 
       auditAction = "submit_final_declaration";
-      auditNotes = `Final declaration submitted. Mode: ${result.mode}. Correlation ID: ${
-        result.hmrcCorrelationId || "N/A"
-      }.`;
+      auditNotes = `Final declaration submitted. Mode: ${
+        result.mode || "unknown"
+      }. Correlation ID: ${result.hmrcCorrelationId || "N/A"}.`;
 
       next = addLocalAudit(next, auditAction, auditNotes);
 
       setWorkflow(next);
+      await saveWorkflowToDb(next);
+      await saveAuditToDb(auditAction, auditNotes, previous, next);
+
       setMessage(result.message || "Final declaration submitted successfully.");
       await loadData();
       setActionLoading(false);
       return;
     }
 
-    await saveWorkflow(next, auditAction, auditNotes);
+    await saveWorkflow(next, auditAction, auditNotes, previous);
     setMessage("Workflow updated successfully.");
     setActionLoading(false);
     await loadData();
   };
-const retrySubmission = async (log: Row) => {
-  setActionLoading(true);
-  setMessage("");
 
-  const { data: sessionData } = await supabase.auth.getSession();
-  const accessToken = sessionData.session?.access_token;
+  const retrySubmission = async (log: Row) => {
+    setActionLoading(true);
+    setMessage("");
 
-  if (!accessToken) {
-    setMessage("Login session expired. Please login again.");
-    setActionLoading(false);
-    return;
-  }
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
 
-  const response = await fetch("/api/hmrc/submit-final-declaration", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({
-      clientId,
-      taxYearId,
-      retryMode: true,
-      retryOfLogId: log.id,
-    }),
-  });
+    if (!accessToken) {
+      setMessage("Login session expired. Please login again.");
+      setActionLoading(false);
+      return;
+    }
 
-  const result = await response.json();
+    const response = await fetch("/api/hmrc/submit-final-declaration", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        clientId,
+        taxYearId,
+        retryMode: true,
+        retryOfLogId: log.id,
+      }),
+    });
 
-  if (!response.ok || !result.success) {
-    setMessage(result.error || "Retry failed.");
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      setMessage(result.error || "Retry failed.");
+      await loadData();
+      setActionLoading(false);
+      return;
+    }
+
+    setMessage(result.message || "Retry completed successfully.");
     await loadData();
     setActionLoading(false);
-    return;
-  }
+  };
 
-  setMessage(result.message || "Retry completed successfully.");
-  await loadData();
-  setActionLoading(false);
-};
   const openViewer = (log: Row, mode: "request" | "response" | "headers") => {
     setSelectedLog(log);
     setViewerMode(mode);
@@ -570,7 +613,9 @@ const retrySubmission = async (log: Row) => {
 
           <p style={styles.subtitle}>
             HMRC:{" "}
-            <strong>{client?.hmrc_connected ? "Connected" : "Not connected"}</strong>{" "}
+            <strong>
+              {client?.hmrc_connected ? "Connected" : "Not connected"}
+            </strong>{" "}
             · Income source:{" "}
             <strong>{client?.hmrc_income_source_type || "Not set"}</strong>
           </p>
@@ -703,7 +748,9 @@ const retrySubmission = async (log: Row) => {
           <div style={styles.checkList}>
             <div style={styles.checkRow}>
               <span>Submission ID</span>
-              <strong style={styles.monospace}>{workflow.hmrcSubmissionId || "Not stored"}</strong>
+              <strong style={styles.monospace}>
+                {workflow.hmrcSubmissionId || "Not stored"}
+              </strong>
             </div>
 
             <div style={styles.checkRow}>
@@ -940,15 +987,15 @@ const retrySubmission = async (log: Row) => {
                           Headers
                         </button>
                         {String(log.status || "").toLowerCase() === "failed" && (
-  <button
-    type="button"
-    onClick={() => retrySubmission(log)}
-    disabled={actionLoading}
-    style={styles.retryButton}
-  >
-    Retry
-  </button>
-)}
+                          <button
+                            type="button"
+                            onClick={() => retrySubmission(log)}
+                            disabled={actionLoading}
+                            style={styles.retryButton}
+                          >
+                            Retry
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -974,7 +1021,11 @@ const retrySubmission = async (log: Row) => {
               </p>
             </div>
 
-            <button type="button" onClick={closeViewer} style={styles.secondaryButton}>
+            <button
+              type="button"
+              onClick={closeViewer}
+              style={styles.secondaryButton}
+            >
               Close viewer
             </button>
           </div>
@@ -991,7 +1042,10 @@ const retrySubmission = async (log: Row) => {
         ) : (
           <div style={styles.auditList}>
             {workflow.audit.map((item, index) => (
-              <div key={`${item.action}-${item.createdAt}-${index}`} style={styles.auditCard}>
+              <div
+                key={`${item.action}-${item.createdAt}-${index}`}
+                style={styles.auditCard}
+              >
                 <div>
                   <strong>{item.action.replaceAll("_", " ")}</strong>
                   <p style={styles.muted}>{item.notes}</p>
@@ -1073,15 +1127,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "12px",
   },
   retryButton: {
-  border: "1px solid #fecaca",
-  background: "#fee2e2",
-  color: "#991b1b",
-  padding: "7px 10px",
-  borderRadius: "10px",
-  fontWeight: 900,
-  cursor: "pointer",
-  fontSize: "12px",
-},
+    border: "1px solid #fecaca",
+    background: "#fee2e2",
+    color: "#991b1b",
+    padding: "7px 10px",
+    borderRadius: "10px",
+    fontWeight: 900,
+    cursor: "pointer",
+    fontSize: "12px",
+  },
   message: {
     background: "#eef6ff",
     border: "1px solid #bfdbfe",

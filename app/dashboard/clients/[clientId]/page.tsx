@@ -70,7 +70,7 @@ export default function ClientDetailPage() {
     const { data: userData, error: userError } = await supabase.auth.getUser();
 
     if (userError || !userData.user) {
-      window.location.href = "/auth/login";
+      router.replace("/auth/login");
       return;
     }
 
@@ -164,23 +164,19 @@ export default function ClientDetailPage() {
       setQuarterLinks([]);
     }
 
-    const { data: fdData, error: fdError } = await supabase
+    const { data: fdData } = await supabase
       .from("tax_year_final_declarations")
       .select("*")
       .eq("firm_id", resolvedFirmId)
       .eq("client_id", clientId);
 
-    if (!fdError) {
-      setFinalDeclarations(fdData || []);
-    } else {
-      setFinalDeclarations([]);
-    }
-
+    setFinalDeclarations(fdData || []);
     setLoading(false);
   };
 
   useEffect(() => {
     if (clientId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId]);
 
   const latestTaxYear = useMemo(() => {
@@ -263,9 +259,24 @@ export default function ClientDetailPage() {
     setMessage("Syncing HMRC obligations...");
 
     try {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+
+      const accessToken = sessionData?.session?.access_token;
+
+      if (sessionError || !accessToken) {
+        setMessage("Login session expired. Please login again.");
+        setSyncing(false);
+        router.replace("/auth/login");
+        return;
+      }
+
       const response = await fetch("/api/hmrc/obligations", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
         body: JSON.stringify({ clientId, nino: client.nino }),
       });
 
@@ -280,7 +291,7 @@ export default function ClientDetailPage() {
       setMessage(
         `HMRC obligations synced successfully. Saved: ${
           result.saved ?? 0
-        }, Failed: ${result.failed ?? 0}`
+        }, Failed: ${result.failed ?? 0}, Matched: ${result.matched ?? 0}`
       );
 
       await loadData();

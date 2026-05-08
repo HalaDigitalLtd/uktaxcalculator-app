@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabaseClient";
 
 type Row = Record<string, any>;
 
 export default function AdminFirmsPage() {
+  const router = useRouter();
+
   const [userEmail, setUserEmail] = useState("");
   const [firms, setFirms] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
@@ -19,7 +22,7 @@ export default function AdminFirmsPage() {
     const { data: userData, error: userError } = await supabase.auth.getUser();
 
     if (userError || !userData.user) {
-      window.location.href = "/auth/login";
+      router.replace("/auth/login");
       return;
     }
 
@@ -33,6 +36,7 @@ export default function AdminFirmsPage() {
     if (adminError || !adminOk) {
       setIsAdmin(false);
       setLoading(false);
+      router.replace("/dashboard");
       return;
     }
 
@@ -64,6 +68,7 @@ export default function AdminFirmsPage() {
 
   useEffect(() => {
     loadAdminData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const stats = useMemo(() => {
@@ -90,12 +95,12 @@ export default function AdminFirmsPage() {
     }
 
     await supabase.auth.signOut();
-    window.location.href = "/auth/login";
+    router.replace("/auth/login");
   };
 
   const openFirmDashboard = (firmId: string) => {
     localStorage.setItem("impersonate_firm_id", firmId);
-    window.location.href = "/dashboard";
+    router.push("/dashboard");
   };
 
   const clearImpersonation = () => {
@@ -114,13 +119,7 @@ export default function AdminFirmsPage() {
   if (!isAdmin) {
     return (
       <main style={styles.page}>
-        <div style={styles.card}>
-          <h1 style={styles.title}>Access denied</h1>
-          <p style={styles.muted}>You are not authorised to view Hala admin.</p>
-          <button onClick={handleLogout} style={styles.darkButton}>
-            Logout
-          </button>
-        </div>
+        <div style={styles.card}>Redirecting...</div>
       </main>
     );
   }
@@ -209,9 +208,7 @@ export default function AdminFirmsPage() {
 
                     <td style={styles.td}>{firm.clients_count || 0}</td>
 
-                    <td style={styles.td}>
-                      {firm.hmrc_connected_count || 0}
-                    </td>
+                    <td style={styles.td}>{firm.hmrc_connected_count || 0}</td>
 
                     <td style={styles.td}>
                       {firm.created_at

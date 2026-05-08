@@ -161,7 +161,7 @@ export async function POST(req: NextRequest) {
       userId: user.id,
       userEmail: user.email,
       clientId: requestedClientId,
-      allowHalaAdmin: false,
+      allowHalaAdmin: true,
     });
 
     const nino = cleanNino(client.nino || requestedNino);

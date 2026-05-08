@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../../../../../../lib/supabaseClient";
 
@@ -9,6 +9,7 @@ type Row = Record<string, any>;
 
 export default function QuarterWorkspacePage() {
   const params = useParams();
+  const router = useRouter();
 
   const clientId = params.clientId as string;
   const taxYearId = params.taxYearId as string;
@@ -17,6 +18,7 @@ export default function QuarterWorkspacePage() {
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
   const [quarter, setQuarter] = useState<Row | null>(null);
+  const [firmId, setFirmId] = useState("");
 
   const [income, setIncome] = useState("0");
   const [expenses, setExpenses] = useState("0");
@@ -45,14 +47,42 @@ export default function QuarterWorkspacePage() {
     );
   }, [client]);
 
+  const resolveFirmId = async () => {
+    const impersonatedFirmId =
+      typeof window !== "undefined"
+        ? localStorage.getItem("impersonate_firm_id")
+        : null;
+
+    const { data, error } = await supabase.rpc("get_current_active_firm_id", {
+      impersonated_firm_id: impersonatedFirmId || null,
+    });
+
+    if (error || !data) {
+      throw new Error(error?.message || "No firm access found.");
+    }
+
+    return String(data);
+  };
+
   const loadData = async () => {
     setLoading(true);
     setMessage("");
 
-    const { data: userData } = await supabase.auth.getUser();
+    const { data: userData, error: userError } = await supabase.auth.getUser();
 
-    if (!userData.user) {
-      window.location.href = "/auth/login";
+    if (userError || !userData.user) {
+      router.replace("/auth/login");
+      return;
+    }
+
+    let resolvedFirmId = "";
+
+    try {
+      resolvedFirmId = await resolveFirmId();
+      setFirmId(resolvedFirmId);
+    } catch (error: any) {
+      setMessage(error?.message || "No firm access found.");
+      setLoading(false);
       return;
     }
 
@@ -60,10 +90,14 @@ export default function QuarterWorkspacePage() {
       .from("clients")
       .select("*")
       .eq("id", clientId)
+      .eq("firm_id", resolvedFirmId)
       .maybeSingle();
 
     if (clientError || !clientData) {
-      setMessage(clientError?.message || "Client not found.");
+      setMessage(
+        clientError?.message ||
+          "Client not found or this firm does not have access."
+      );
       setLoading(false);
       return;
     }
@@ -75,6 +109,7 @@ export default function QuarterWorkspacePage() {
       .select("*")
       .eq("id", taxYearId)
       .eq("client_id", clientId)
+      .eq("firm_id", resolvedFirmId)
       .maybeSingle();
 
     if (taxYearError || !taxYearData) {
@@ -90,6 +125,7 @@ export default function QuarterWorkspacePage() {
       .select("*")
       .eq("id", quarterId)
       .eq("tax_year_id", taxYearId)
+      .eq("firm_id", resolvedFirmId)
       .maybeSingle();
 
     if (quarterError || !quarterData) {
@@ -99,8 +135,8 @@ export default function QuarterWorkspacePage() {
     }
 
     setQuarter(quarterData);
-    setIncome(String(quarterData.income || quarterData.income_total || 0));
-    setExpenses(String(quarterData.expenses || quarterData.expense_total || 0));
+    setIncome(String(quarterData.income ?? 0));
+    setExpenses(String(quarterData.expenses ?? 0));
     setStatus(quarterData.status || "not_started");
 
     setLoading(false);
@@ -108,21 +144,34 @@ export default function QuarterWorkspacePage() {
 
   useEffect(() => {
     if (clientId && taxYearId && quarterId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId, quarterId]);
 
   const saveQuarter = async () => {
+    if (!firmId) {
+      setMessage("Firm not resolved. Please refresh and try again.");
+      return;
+    }
+
     setSaving(true);
     setMessage("Saving quarter...");
 
-    const { error } = await supabase
+    const incomeNumber = Number(income || 0);
+    const expensesNumber = Number(expenses || 0);
+
+    const { data, error } = await supabase
       .from("quarters")
       .update({
-        income: Number(income || 0),
-        expenses: Number(expenses || 0),
+        income: incomeNumber,
+        expenses: expensesNumber,
+        profit: incomeNumber - expensesNumber,
         status,
       })
       .eq("id", quarterId)
-      .eq("tax_year_id", taxYearId);
+      .eq("tax_year_id", taxYearId)
+      .eq("firm_id", firmId)
+      .select("*")
+      .maybeSingle();
 
     if (error) {
       setMessage(`Save error: ${error.message}`);
@@ -130,25 +179,51 @@ export default function QuarterWorkspacePage() {
       return;
     }
 
+    if (!data) {
+      setMessage(
+        "Save failed: no quarter row was updated. This usually means firm access or RLS blocked the update."
+      );
+      setSaving(false);
+      return;
+    }
+
+    setQuarter(data);
+    setIncome(String(data.income ?? 0));
+    setExpenses(String(data.expenses ?? 0));
+    setStatus(data.status || "not_started");
+
     setMessage("Quarter saved successfully.");
     setSaving(false);
-    await loadData();
   };
 
   const markPrepared = async () => {
     setStatus("prepared");
+
+    if (!firmId) {
+      setMessage("Firm not resolved. Please refresh and try again.");
+      return;
+    }
+
     setSaving(true);
     setMessage("Marking quarter as prepared...");
 
-    const { error } = await supabase
+    const incomeNumber = Number(income || 0);
+    const expensesNumber = Number(expenses || 0);
+
+    const { data, error } = await supabase
       .from("quarters")
       .update({
-        income: Number(income || 0),
-        expenses: Number(expenses || 0),
+        income: incomeNumber,
+        expenses: expensesNumber,
+        profit: incomeNumber - expensesNumber,
         status: "prepared",
+        prepared_at: new Date().toISOString(),
       })
       .eq("id", quarterId)
-      .eq("tax_year_id", taxYearId);
+      .eq("tax_year_id", taxYearId)
+      .eq("firm_id", firmId)
+      .select("*")
+      .maybeSingle();
 
     if (error) {
       setMessage(`Prepare error: ${error.message}`);
@@ -156,9 +231,21 @@ export default function QuarterWorkspacePage() {
       return;
     }
 
+    if (!data) {
+      setMessage(
+        "Prepare failed: no quarter row was updated. This usually means firm access or RLS blocked the update."
+      );
+      setSaving(false);
+      return;
+    }
+
+    setQuarter(data);
+    setIncome(String(data.income ?? 0));
+    setExpenses(String(data.expenses ?? 0));
+    setStatus(data.status || "prepared");
+
     setMessage("Quarter marked as prepared.");
     setSaving(false);
-    await loadData();
   };
 
   if (loading) {
@@ -199,7 +286,11 @@ export default function QuarterWorkspacePage() {
             Refresh
           </button>
 
-          <button onClick={saveQuarter} disabled={saving} style={styles.primaryButton}>
+          <button
+            onClick={saveQuarter}
+            disabled={saving}
+            style={styles.primaryButton}
+          >
             {saving ? "Saving..." : "Save Quarter"}
           </button>
         </div>
@@ -270,11 +361,19 @@ export default function QuarterWorkspacePage() {
         </div>
 
         <div style={styles.buttonRow}>
-          <button onClick={saveQuarter} disabled={saving} style={styles.primaryButton}>
+          <button
+            onClick={saveQuarter}
+            disabled={saving}
+            style={styles.primaryButton}
+          >
             Save Quarter
           </button>
 
-          <button onClick={markPrepared} disabled={saving} style={styles.secondaryButton}>
+          <button
+            onClick={markPrepared}
+            disabled={saving}
+            style={styles.secondaryButton}
+          >
             Mark Prepared
           </button>
         </div>

@@ -2,17 +2,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabaseClient";
 
 type Row = Record<string, any>;
 
 export default function DashboardClientsPage() {
+  const router = useRouter();
+
   const [userEmail, setUserEmail] = useState("");
   const [firmId, setFirmId] = useState("");
   const [firmName, setFirmName] = useState("Your firm");
   const [clients, setClients] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const loadClients = async () => {
     setLoading(true);
@@ -21,11 +25,16 @@ export default function DashboardClientsPage() {
     const { data: authData, error: authError } = await supabase.auth.getUser();
 
     if (authError || !authData.user) {
-      window.location.href = "/auth/login";
+      router.replace("/auth/login");
       return;
     }
 
-    setUserEmail(authData.user.email || "");
+    const email = authData.user.email || "";
+    setUserEmail(email);
+
+    const { data: adminOk } = await supabase.rpc("is_hala_admin");
+    const adminStatus = Boolean(adminOk);
+    setIsAdmin(adminStatus);
 
     const impersonatedFirmId =
       typeof window !== "undefined"
@@ -41,8 +50,10 @@ export default function DashboardClientsPage() {
 
     if (firmResolveError || !resolvedFirmId) {
       setMessage(
-        firmResolveError?.message ||
-          "No firm access found for this login. Please check firm_users setup."
+        adminStatus
+          ? "Admin mode active. Please select a firm from the admin control centre first."
+          : firmResolveError?.message ||
+              "No firm access found for this login. Please check firm user setup."
       );
       setFirmId("");
       setClients([]);
@@ -86,6 +97,7 @@ export default function DashboardClientsPage() {
 
   useEffect(() => {
     loadClients();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const stats = useMemo(() => {
@@ -100,6 +112,29 @@ export default function DashboardClientsPage() {
     return (
       <main style={styles.page}>
         <div style={styles.card}>Loading firm clients...</div>
+      </main>
+    );
+  }
+
+  if (!firmId) {
+    return (
+      <main style={styles.page}>
+        <div style={styles.card}>
+          <h1 style={styles.title}>No firm selected</h1>
+          <p style={styles.muted}>{message}</p>
+
+          <div style={{ marginTop: "18px", display: "flex", gap: "12px" }}>
+            {isAdmin && (
+              <Link href="/admin/firms" style={styles.openButton}>
+                Open Admin Firms
+              </Link>
+            )}
+
+            <Link href="/dashboard" style={styles.secondaryLink}>
+              Back to Dashboard
+            </Link>
+          </div>
+        </div>
       </main>
     );
   }
@@ -134,6 +169,12 @@ export default function DashboardClientsPage() {
           </button>
         </div>
       </div>
+
+      {isAdmin && (
+        <div style={styles.adminBanner}>
+          Admin firm view active. Client data is filtered to the selected firm.
+        </div>
+      )}
 
       {message && <div style={styles.message}>{message}</div>}
 
@@ -180,8 +221,8 @@ export default function DashboardClientsPage() {
                     <h2 style={styles.clientName}>{name}</h2>
                     <p style={styles.muted}>
                       Email: <strong>{client.email || "Not added"}</strong> ·
-                      NINO: <strong>{client.nino || "Not added"}</strong> ·
-                      UTR: <strong>{client.utr || "Not added"}</strong> · HMRC:{" "}
+                      NINO: <strong>{client.nino || "Not added"}</strong> · UTR:{" "}
+                      <strong>{client.utr || "Not added"}</strong> · HMRC:{" "}
                       <strong>
                         {client.hmrc_connected ? "Connected" : "Not connected"}
                       </strong>
@@ -349,5 +390,14 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "14px",
     marginBottom: "20px",
     fontWeight: 700,
+  },
+  adminBanner: {
+    background: "#fff7ed",
+    border: "1px solid #fed7aa",
+    color: "#9a3412",
+    padding: "14px 16px",
+    borderRadius: "14px",
+    marginBottom: "20px",
+    fontWeight: 800,
   },
 };

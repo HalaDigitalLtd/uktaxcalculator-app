@@ -2,11 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import crypto from "crypto";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   return NextResponse.json(
     { error: "Use dashboard HMRC connect page instead." },
     { status: 405 }
   );
+}
+
+async function isHalaAdminUser(userId: string, email: string | undefined) {
+  if (!email) return false;
+
+  const { data, error } = await supabaseAdmin
+    .from("app_admins")
+    .select("*")
+    .eq("email", email)
+    .limit(1);
+
+  if (error) {
+    console.error("Direct app_admins check failed:", error);
+    return false;
+  }
+
+  return Boolean(data && data.length > 0);
 }
 
 export async function POST(req: NextRequest) {
@@ -33,17 +52,59 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { data: firmUser, error: firmError } = await supabaseAdmin
-      .from("firm_users")
-      .select("firm_id")
-      .eq("user_id", user.id)
-      .single();
+    let body: any = {};
 
-    if (firmError || !firmUser?.firm_id) {
-      return NextResponse.json(
-        { error: "Firm not found for user" },
-        { status: 400 }
-      );
+    try {
+      const requestText = await req.text();
+      body = requestText ? JSON.parse(requestText) : {};
+    } catch {
+      body = {};
+    }
+
+    const requestedFirmId = body.firmId || body.firm_id || null;
+    const userEmail = user.email || "";
+
+    let resolvedFirmId: string | null = null;
+
+    const adminOk = await isHalaAdminUser(user.id, userEmail);
+
+    if (requestedFirmId && adminOk) {
+      const { data: firmData, error: firmError } = await supabaseAdmin
+        .from("firms")
+        .select("id")
+        .eq("id", requestedFirmId)
+        .maybeSingle();
+
+      if (firmError || !firmData?.id) {
+        return NextResponse.json(
+          { error: "Requested firm not found." },
+          { status: 404 }
+        );
+      }
+
+      resolvedFirmId = firmData.id;
+    }
+
+    if (!resolvedFirmId) {
+      const { data: firmUser, error: firmError } = await supabaseAdmin
+        .from("firm_users")
+        .select("firm_id")
+        .eq("user_id", user.id)
+        .eq("status", "active")
+        .limit(1)
+        .maybeSingle();
+
+      if (firmError || !firmUser?.firm_id) {
+        return NextResponse.json(
+          {
+            error:
+              "Firm not found for user. If using admin mode, select a firm from /admin/firms first.",
+          },
+          { status: 400 }
+        );
+      }
+
+      resolvedFirmId = firmUser.firm_id;
     }
 
     const state = crypto.randomBytes(32).toString("hex");
@@ -52,11 +113,9 @@ export async function POST(req: NextRequest) {
       .from("hmrc_oauth_states")
       .insert({
         state,
-        firm_id: firmUser.firm_id,
+        firm_id: resolvedFirmId,
         user_id: user.id,
-        expires_at: new Date(
-          Date.now() + 10 * 60 * 1000
-        ).toISOString(),
+        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
       });
 
     if (stateError) {
@@ -71,24 +130,18 @@ export async function POST(req: NextRequest) {
     const authUrl = new URL(process.env.HMRC_AUTH_URL!);
 
     authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set(
-      "client_id",
-      process.env.HMRC_CLIENT_ID!
-    );
-    authUrl.searchParams.set(
-      "redirect_uri",
-      process.env.HMRC_REDIRECT_URI!
-    );
-
+    authUrl.searchParams.set("client_id", process.env.HMRC_CLIENT_ID!);
+    authUrl.searchParams.set("redirect_uri", process.env.HMRC_REDIRECT_URI!);
     authUrl.searchParams.set(
       "scope",
       "read:self-assessment write:self-assessment"
     );
-
     authUrl.searchParams.set("state", state);
 
     return NextResponse.json({
       authUrl: authUrl.toString(),
+      firmId: resolvedFirmId,
+      adminMode: adminOk,
     });
   } catch (error: any) {
     console.error("HMRC connect error:", error);

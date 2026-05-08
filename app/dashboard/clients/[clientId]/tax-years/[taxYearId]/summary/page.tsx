@@ -15,7 +15,8 @@ export default function TaxYearSummaryPage() {
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
   const [quarters, setQuarters] = useState<Row[]>([]);
-  const [finalDeclarations, setFinalDeclarations] = useState<Row[]>([]);
+  const [workflow, setWorkflow] = useState<Row | null>(null);
+  const [submissionLogs, setSubmissionLogs] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
 
@@ -97,19 +98,31 @@ export default function TaxYearSummaryPage() {
 
     setQuarters(quarterData || []);
 
-    const { data: fdData } = await supabase
-      .from("final_declarations")
+    const { data: workflowData } = await supabase
+      .from("tax_year_final_declarations")
       .select("*")
       .eq("client_id", clientId)
       .eq("tax_year_id", taxYearId)
-      .order("created_at", { ascending: false });
+      .maybeSingle();
 
-    setFinalDeclarations(fdData || []);
+    setWorkflow(workflowData || null);
+
+    const { data: logs } = await supabase
+      .from("hmrc_submission_logs")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .eq("submission_type", "final_declaration")
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    setSubmissionLogs(logs || []);
     setLoading(false);
   };
 
   useEffect(() => {
     if (clientId && taxYearId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId]);
 
   const totals = useMemo(() => {
@@ -140,30 +153,50 @@ export default function TaxYearSummaryPage() {
     };
   }, [quarters]);
 
-  const submittedQuarters = useMemo(() => {
-  return quarters.filter((q) =>
-    [
-      "prepared",
-      "submitted",
-      "finalised",
-      "accepted",
-    ].includes(String(q.status || "").toLowerCase())
-  ).length;
-}, [quarters]);
+  const preparedQuarters = useMemo(() => {
+    return quarters.filter((q) =>
+      ["prepared", "submitted", "finalised", "accepted"].includes(
+        String(q.status || "").toLowerCase()
+      )
+    ).length;
+  }, [quarters]);
 
-  const latestFinalDeclaration = finalDeclarations[0];
+  const allQuartersPrepared =
+    quarters.length > 0 && preparedQuarters === quarters.length;
+
+  const latestSubmissionLog = submissionLogs[0] || null;
 
   const finalStatus =
-    latestFinalDeclaration?.status ||
-    latestFinalDeclaration?.state ||
-    latestFinalDeclaration?.declaration_status ||
+    workflow?.status ||
+    workflow?.review_state ||
+    latestSubmissionLog?.status ||
     "Not started";
 
-  const locked =
-    latestFinalDeclaration?.locked === true ||
-    latestFinalDeclaration?.is_locked === true ||
-    String(latestFinalDeclaration?.status || "").toLowerCase() === "locked" ||
-    String(latestFinalDeclaration?.status || "").toLowerCase() === "finalised";
+  const locked = Boolean(workflow?.locked);
+
+  const submitted = Boolean(
+    workflow?.submitted ||
+      workflow?.status === "submitted" ||
+      latestSubmissionLog?.status === "submitted"
+  );
+
+  const hmrcSubmissionId =
+    workflow?.hmrc_submission_id ||
+    latestSubmissionLog?.hmrc_submission_id ||
+    latestSubmissionLog?.submission_id ||
+    null;
+
+  const hmrcCorrelationId =
+    workflow?.hmrc_correlation_id ||
+    latestSubmissionLog?.hmrc_correlation_id ||
+    latestSubmissionLog?.correlation_id ||
+    null;
+
+  const hmrcSubmittedAt =
+    workflow?.hmrc_submitted_at ||
+    workflow?.submitted_at ||
+    latestSubmissionLog?.created_at ||
+    null;
 
   if (loading) {
     return (
@@ -177,10 +210,7 @@ export default function TaxYearSummaryPage() {
     <main style={styles.page}>
       <div style={styles.header}>
         <div>
-          <Link
-            href={`/dashboard/clients/${clientId}`}
-            style={styles.backLink}
-          >
+          <Link href={`/dashboard/clients/${clientId}`} style={styles.backLink}>
             ← Back to client
           </Link>
 
@@ -193,9 +223,7 @@ export default function TaxYearSummaryPage() {
 
           <p style={styles.subtitle}>
             HMRC:{" "}
-            <strong>
-              {client?.hmrc_connected ? "Connected" : "Not connected"}
-            </strong>{" "}
+            <strong>{client?.hmrc_connected ? "Connected" : "Not connected"}</strong>{" "}
             · Income source:{" "}
             <strong>{client?.hmrc_income_source_type || "Not set"}</strong>
           </p>
@@ -236,7 +264,7 @@ export default function TaxYearSummaryPage() {
         <div style={styles.statCard}>
           <span style={styles.statLabel}>Quarter readiness</span>
           <strong style={styles.statValue}>
-            {submittedQuarters}/{quarters.length}
+            {preparedQuarters}/{quarters.length}
           </strong>
         </div>
       </section>
@@ -247,10 +275,27 @@ export default function TaxYearSummaryPage() {
 
           <div style={styles.statusBox}>
             <span style={styles.statusLabel}>Current state</span>
-            <strong style={styles.statusValue}>{finalStatus}</strong>
+            <strong style={styles.statusValue}>
+              {String(finalStatus).replaceAll("_", " ")}
+            </strong>
           </div>
 
           <div style={styles.statusGrid}>
+            <div>
+              <span style={styles.miniLabel}>Review state</span>
+              <strong>
+                {String(workflow?.review_state || "Not started").replaceAll(
+                  "_",
+                  " "
+                )}
+              </strong>
+            </div>
+
+            <div>
+              <span style={styles.miniLabel}>Accountant approved</span>
+              <strong>{workflow?.approved ? "Yes" : "No"}</strong>
+            </div>
+
             <div>
               <span style={styles.miniLabel}>Lock status</span>
               <strong>{locked ? "Locked" : "Unlocked"}</strong>
@@ -258,17 +303,29 @@ export default function TaxYearSummaryPage() {
 
             <div>
               <span style={styles.miniLabel}>HMRC submission</span>
-              <strong>
-                {latestFinalDeclaration?.hmrc_submission_id ||
-                  latestFinalDeclaration?.submission_id ||
-                  "Not submitted"}
+              <strong>{submitted ? "Submitted" : "Not submitted"}</strong>
+            </div>
+
+            <div>
+              <span style={styles.miniLabel}>Submission ID</span>
+              <strong style={styles.monospace}>
+                {hmrcSubmissionId || "Not available"}
               </strong>
             </div>
 
             <div>
               <span style={styles.miniLabel}>Correlation ID</span>
+              <strong style={styles.monospace}>
+                {hmrcCorrelationId || "Not available"}
+              </strong>
+            </div>
+
+            <div>
+              <span style={styles.miniLabel}>HMRC submitted at</span>
               <strong>
-                {latestFinalDeclaration?.correlation_id || "Not available"}
+                {hmrcSubmittedAt
+                  ? new Date(hmrcSubmittedAt).toLocaleString()
+                  : "Not available"}
               </strong>
             </div>
           </div>
@@ -289,17 +346,23 @@ export default function TaxYearSummaryPage() {
             </div>
 
             <div style={styles.checkRow}>
-              <span>All quarters submitted</span>
-              <strong>
-                {quarters.length > 0 && submittedQuarters === quarters.length
-                  ? "Yes"
-                  : "No"}
-              </strong>
+              <span>All quarters prepared</span>
+              <strong>{allQuartersPrepared ? "Yes" : "No"}</strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>Accountant approved</span>
+              <strong>{workflow?.approved ? "Yes" : "No"}</strong>
             </div>
 
             <div style={styles.checkRow}>
               <span>Final declaration locked</span>
               <strong>{locked ? "Yes" : "No"}</strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>HMRC final declaration submitted</span>
+              <strong>{submitted ? "Yes" : "No"}</strong>
             </div>
           </div>
         </div>
@@ -354,7 +417,9 @@ export default function TaxYearSummaryPage() {
                       </td>
 
                       <td style={styles.td}>
-                        <span style={styles.badge}>{q.status || "not_started"}</span>
+                        <span style={styles.badge}>
+                          {q.status || "not_started"}
+                        </span>
                       </td>
 
                       <td style={styles.td}>{money(income)}</td>
@@ -387,30 +452,34 @@ export default function TaxYearSummaryPage() {
       <section style={styles.card}>
         <h2 style={styles.sectionTitle}>HMRC Final Declaration History</h2>
 
-        {finalDeclarations.length === 0 ? (
+        {submissionLogs.length === 0 ? (
           <p style={styles.muted}>No HMRC final declaration submissions yet.</p>
         ) : (
           <div style={styles.historyList}>
-            {finalDeclarations.map((fd) => (
-              <div key={fd.id} style={styles.historyCard}>
+            {submissionLogs.map((log) => (
+              <div key={log.id} style={styles.historyCard}>
                 <div>
-                  <strong>
-                    {fd.status ||
-                      fd.state ||
-                      fd.declaration_status ||
-                      "Unknown status"}
-                  </strong>
+                  <strong>{log.status || "Unknown status"}</strong>
                   <p style={styles.muted}>
-                    Created: {fd.created_at || "Not available"}
+                    Created:{" "}
+                    {log.created_at
+                      ? new Date(log.created_at).toLocaleString()
+                      : "Not available"}
                   </p>
                 </div>
 
                 <div style={styles.historyMeta}>
                   <span>
-                    Submission:{" "}
-                    {fd.hmrc_submission_id || fd.submission_id || "N/A"}
+                    HTTP: <strong>{log.http_status || "N/A"}</strong>
                   </span>
-                  <span>Correlation: {fd.correlation_id || "N/A"}</span>
+                  <span>
+                    Submission:{" "}
+                    <strong>{log.hmrc_submission_id || "N/A"}</strong>
+                  </span>
+                  <span>
+                    Correlation:{" "}
+                    <strong>{log.hmrc_correlation_id || "N/A"}</strong>
+                  </span>
                 </div>
               </div>
             ))}
@@ -638,5 +707,11 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "4px",
     color: "#334155",
     fontSize: "13px",
+  },
+  monospace: {
+    fontFamily:
+      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontSize: "12px",
+    overflowWrap: "anywhere",
   },
 };
