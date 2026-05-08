@@ -11,7 +11,7 @@ export default function DashboardHomePage() {
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState("");
   const [firmId, setFirmId] = useState<string | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isHalaAdmin, setIsHalaAdmin] = useState(false);
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -24,33 +24,25 @@ export default function DashboardHomePage() {
         return;
       }
 
-      const email = userData.user.email || "";
-      setUserEmail(email);
+      setUserEmail(userData.user.email || "");
 
       const { data: adminCheck } = await supabase.rpc("is_hala_admin");
       const adminStatus = Boolean(adminCheck);
-      setIsAdmin(adminStatus);
+      setIsHalaAdmin(adminStatus);
 
-      const impersonatedFirmId =
-        typeof window !== "undefined"
-          ? localStorage.getItem("impersonate_firm_id")
-          : null;
+      const impersonatedFirmId = localStorage.getItem("impersonate_firm_id");
 
-      const { data: resolvedFirmId, error: firmError } = await supabase.rpc(
+      const { data: resolvedFirmId } = await supabase.rpc(
         "get_current_active_firm_id",
         {
           impersonated_firm_id: impersonatedFirmId || null,
         }
       );
 
-      if (firmError) {
-        console.error("Firm resolver error:", firmError);
-      }
-
       setFirmId(resolvedFirmId || null);
 
-      if (adminStatus && !impersonatedFirmId && !resolvedFirmId) {
-        setLoading(false);
+      if (resolvedFirmId) {
+        router.replace("/dashboard/clients");
         return;
       }
 
@@ -71,38 +63,17 @@ export default function DashboardHomePage() {
     );
   }
 
-  if (isAdmin && !firmId) {
+  if (isHalaAdmin && !firmId) {
     return (
       <main style={pageStyle}>
         <div style={containerStyle}>
-          <h1 style={headingStyle}>Hala Admin Mode</h1>
-
+          <h1 style={headingStyle}>Hala Super Admin</h1>
           <p style={subtitleStyle}>
-            You are logged in as {userEmail}. Select a firm from the admin
-            control centre before opening the firm dashboard.
+            You are logged in as {userEmail}. Select a firm before opening a firm workspace.
           </p>
 
           <Link href="/admin/firms" style={primaryButtonStyle}>
-            Open Admin Firms
-          </Link>
-        </div>
-      </main>
-    );
-  }
-
-  if (!firmId) {
-    return (
-      <main style={pageStyle}>
-        <div style={containerStyle}>
-          <h1 style={headingStyle}>No firm access found</h1>
-
-          <p style={subtitleStyle}>
-            Your login is valid, but your account is not currently linked to an
-            active firm.
-          </p>
-
-          <Link href="/auth/login" style={primaryButtonStyle}>
-            Back to Login
+            Open Firms Control Centre
           </Link>
         </div>
       </main>
@@ -112,33 +83,19 @@ export default function DashboardHomePage() {
   return (
     <main style={pageStyle}>
       <div style={containerStyle}>
-        <h1 style={headingStyle}>Hala Digital MTD Dashboard</h1>
+        <h1 style={headingStyle}>Firm access required</h1>
 
-        <p style={subtitleStyle}>Main control centre for MTD ITSA workflow.</p>
+        <p style={subtitleStyle}>
+          Your login is valid, but your account is not linked to an active firm workspace.
+        </p>
 
-        {isAdmin && (
-          <div style={adminBannerStyle}>
-            Admin firm view active. You are viewing this dashboard through firm
-            impersonation.
-          </div>
-        )}
-
-        <div style={gridStyle}>
-          <Link href="/dashboard/clients" style={cardStyle}>
-            <h2 style={titleStyle}>Clients</h2>
-            <p style={textStyle}>
-              Open clients, tax years, quarters and submissions.
-            </p>
+        <div style={actionsStyle}>
+          <Link href="/auth/register" style={primaryButtonStyle}>
+            Register Firm
           </Link>
 
-          <Link href="/dashboard/hmrc-connect" style={cardStyle}>
-            <h2 style={titleStyle}>HMRC Connect</h2>
-            <p style={textStyle}>Manage HMRC OAuth connections and tokens.</p>
-          </Link>
-
-          <Link href="/dashboard/settings" style={cardStyle}>
-            <h2 style={titleStyle}>Settings</h2>
-            <p style={textStyle}>Firm settings and internal configuration.</p>
+          <Link href="/auth/login" style={secondaryButtonStyle}>
+            Back to Login
           </Link>
         </div>
       </div>
@@ -154,12 +111,17 @@ const pageStyle: React.CSSProperties = {
 };
 
 const containerStyle: React.CSSProperties = {
-  maxWidth: "1100px",
+  maxWidth: "960px",
   margin: "0 auto",
+  background: "white",
+  border: "1px solid #e5e7eb",
+  borderRadius: "22px",
+  padding: "34px",
+  boxShadow: "0 10px 25px rgba(15,23,42,0.06)",
 };
 
 const headingStyle: React.CSSProperties = {
-  fontSize: "42px",
+  fontSize: "40px",
   fontWeight: 900,
   marginBottom: "10px",
   color: "#111827",
@@ -167,53 +129,33 @@ const headingStyle: React.CSSProperties = {
 
 const subtitleStyle: React.CSSProperties = {
   color: "#64748b",
-  fontSize: "18px",
-  marginBottom: "40px",
+  fontSize: "17px",
+  marginBottom: "28px",
 };
 
-const gridStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-  gap: "20px",
-};
-
-const cardStyle: React.CSSProperties = {
-  background: "white",
-  border: "1px solid #e5e7eb",
-  borderRadius: "20px",
-  padding: "28px",
-  textDecoration: "none",
-  color: "#111827",
-  boxShadow: "0 10px 25px rgba(15,23,42,0.06)",
-};
-
-const titleStyle: React.CSSProperties = {
-  fontSize: "24px",
-  fontWeight: 900,
-  marginBottom: "10px",
-};
-
-const textStyle: React.CSSProperties = {
-  color: "#64748b",
-  fontSize: "15px",
+const actionsStyle: React.CSSProperties = {
+  display: "flex",
+  gap: "12px",
+  flexWrap: "wrap",
 };
 
 const primaryButtonStyle: React.CSSProperties = {
   display: "inline-block",
   background: "#111827",
   color: "white",
-  padding: "14px 22px",
-  borderRadius: "14px",
+  padding: "13px 20px",
+  borderRadius: "12px",
   textDecoration: "none",
   fontWeight: 800,
 };
 
-const adminBannerStyle: React.CSSProperties = {
-  background: "#fff7ed",
-  border: "1px solid #fed7aa",
-  color: "#9a3412",
-  padding: "14px 18px",
-  borderRadius: "14px",
-  marginBottom: "24px",
-  fontWeight: 700,
-}
+const secondaryButtonStyle: React.CSSProperties = {
+  display: "inline-block",
+  background: "white",
+  color: "#111827",
+  padding: "13px 20px",
+  borderRadius: "12px",
+  border: "1px solid #d1d5db",
+  textDecoration: "none",
+  fontWeight: 800,
+};

@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
 
-const ADMIN_EMAILS = ["ikramzaman@gmail.com", "ikramzaman+test4@gmail.com"];
-
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -12,20 +10,47 @@ export default function LoginPage() {
   const [inviteToken, setInviteToken] = useState("");
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
     const params = new URLSearchParams(window.location.search);
     const token = params.get("invite");
-
-    if (token) {
-      setInviteToken(token);
-    }
+    if (token) setInviteToken(token);
   }, []);
 
-  const handleLogin = async () => {
-    setLoading(true);
+  const routeAfterLogin = async () => {
+    if (inviteToken) {
+      window.location.href = `/join/${inviteToken}`;
+      return;
+    }
 
+    const impersonatedFirmId = localStorage.getItem("impersonate_firm_id");
+
+    const { data: isHalaAdmin } = await supabase.rpc("is_hala_admin");
+
+    const { data: firmId } = await supabase.rpc("get_current_active_firm_id", {
+      impersonated_firm_id: impersonatedFirmId || null,
+    });
+
+    if (isHalaAdmin && !firmId) {
+      window.location.href = "/admin/firms";
+      return;
+    }
+
+    if (firmId) {
+      window.location.href = "/dashboard/clients";
+      return;
+    }
+
+    window.location.href = "/dashboard";
+  };
+
+  const handleLogin = async () => {
     const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail || !password) {
+      alert("Please enter email and password.");
+      return;
+    }
+
+    setLoading(true);
 
     const { error } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
@@ -38,35 +63,18 @@ export default function LoginPage() {
       return;
     }
 
-    setTimeout(() => {
-      if (inviteToken) {
-        window.location.href = `/join/${inviteToken}`;
-        return;
-      }
-
-      if (ADMIN_EMAILS.includes(cleanEmail)) {
-        window.location.href = "/admin/firms";
-      } else {
-        window.location.href = "/app/clients";
-      }
-    }, 300);
+    await routeAfterLogin();
   };
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "#f6f8fb",
-        padding: 40,
-      }}
-    >
+    <main style={{ minHeight: "100vh", background: "#f6f8fb", padding: 40 }}>
       <div
         style={{
-          maxWidth: 400,
+          maxWidth: 420,
           margin: "80px auto",
           background: "white",
           padding: 30,
-          borderRadius: 12,
+          borderRadius: 16,
           border: "1px solid #e5e7eb",
         }}
       >
@@ -75,20 +83,14 @@ export default function LoginPage() {
         <p style={{ color: "#64748b", fontSize: 14, marginBottom: 20 }}>
           {inviteToken
             ? "Login to accept your firm invitation."
-            : "Access your Hala MTD Portal account."}
+            : "Access your Hala MTD firm workspace."}
         </p>
 
         <input
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={{
-            width: "100%",
-            padding: 10,
-            marginBottom: 12,
-            borderRadius: 6,
-            border: "1px solid #ddd",
-          }}
+          style={inputStyle}
         />
 
         <input
@@ -99,13 +101,7 @@ export default function LoginPage() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !loading) handleLogin();
           }}
-          style={{
-            width: "100%",
-            padding: 10,
-            marginBottom: 16,
-            borderRadius: 6,
-            border: "1px solid #ddd",
-          }}
+          style={inputStyle}
         />
 
         <button
@@ -113,19 +109,19 @@ export default function LoginPage() {
           disabled={loading}
           style={{
             width: "100%",
-            padding: "10px 14px",
-            background: loading ? "#ccc" : "#0f172a",
+            padding: "11px 14px",
+            background: loading ? "#94a3b8" : "#0f172a",
             color: "white",
             border: "none",
-            borderRadius: 8,
-            fontWeight: 700,
+            borderRadius: 10,
+            fontWeight: 800,
             cursor: loading ? "not-allowed" : "pointer",
           }}
         >
           {loading ? "Logging in..." : "Login"}
         </button>
 
-        <p style={{ marginTop: 15, fontSize: 14 }}>
+        <p style={{ marginTop: 16, fontSize: 14 }}>
           Don’t have an account?{" "}
           <a
             href={
@@ -133,7 +129,7 @@ export default function LoginPage() {
                 ? `/auth/register?invite=${inviteToken}`
                 : "/auth/register"
             }
-            style={{ color: "#2563eb" }}
+            style={{ color: "#2563eb", fontWeight: 700 }}
           >
             {inviteToken ? "Create account to join firm" : "Register your firm"}
           </a>
@@ -142,3 +138,11 @@ export default function LoginPage() {
     </main>
   );
 }
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: 11,
+  marginBottom: 12,
+  borderRadius: 8,
+  border: "1px solid #d1d5db",
+};

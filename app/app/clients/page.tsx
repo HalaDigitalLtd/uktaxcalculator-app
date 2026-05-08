@@ -148,22 +148,19 @@ export default function ClientsPage() {
       activeFirmId = impersonateFirmId;
       setIsAdminView(true);
     } else {
-      const { data: firmUsers, error: firmUserError } = await supabase
-        .from("firm_users")
-        .select("firm_id, role, created_at")
-        .eq("user_id", userData.user.id)
-        .eq("status", "active")
-        .order("created_at", { ascending: false })
-        .limit(1);
+      const { data: resolvedFirmId, error: resolvedFirmError } =
+  await supabase.rpc("get_current_active_firm_id", {
+    impersonated_firm_id: null,
+  });
 
-      if (firmUserError || !firmUsers || firmUsers.length === 0) {
-        alert("No firm found for this user. Please accept your firm invite first.");
-        router.push("/auth/login");
-        return;
-      }
+if (resolvedFirmError || !resolvedFirmId) {
+  alert("No active firm access found for this user.");
+  router.push("/auth/login");
+  return;
+}
 
-      activeFirmId = firmUsers[0].firm_id;
-      setIsAdminView(false);
+activeFirmId = String(resolvedFirmId);
+setIsAdminView(false);
     }
 
     setFirmId(activeFirmId);

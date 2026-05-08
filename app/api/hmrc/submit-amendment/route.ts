@@ -12,6 +12,7 @@ import {
   createIdempotencyKey,
   createSubmissionHashes,
 } from "../../../../lib/hmrcSubmissionIntegrity";
+import { requireFirmRole } from "../../../../lib/rbac";
 
 function money(value: any) {
   const n = Number(value || 0);
@@ -241,6 +242,12 @@ export async function POST(req: NextRequest) {
       allowHalaAdmin: false,
     });
 
+    const userFirmRole = await requireFirmRole({
+      firmId: client.firm_id,
+      userId: user.id,
+      minimumRole: "partner",
+    });
+
     const { data: finalDeclaration, error: finalDeclarationError } =
       await supabaseAdmin
         .from("tax_year_final_declarations")
@@ -326,6 +333,7 @@ export async function POST(req: NextRequest) {
           reason: "Amendment already submitted",
           original_final_declaration_id: finalDeclaration.id,
           original_hmrc_submission_id: originalSubmissionId,
+          user_firm_role: userFirmRole,
         },
       });
 
@@ -349,6 +357,7 @@ export async function POST(req: NextRequest) {
           original_final_declaration_id: finalDeclaration.id,
           original_hmrc_submission_id: originalSubmissionId,
           original_hmrc_correlation_id: originalCorrelationId,
+          user_firm_role: userFirmRole,
         },
       });
 
@@ -361,6 +370,7 @@ export async function POST(req: NextRequest) {
           hmrcCorrelationId: amendment.hmrc_correlation_id || null,
           hmrcSubmittedAt:
             amendment.hmrc_submitted_at || amendment.submitted_at || null,
+          userFirmRole,
         },
         { status: 409 }
       );
@@ -375,6 +385,7 @@ export async function POST(req: NextRequest) {
           status: amendment.status || null,
           locked: Boolean(amendment.locked),
           lockedAt: amendment.locked_at || null,
+          userFirmRole,
         },
         { status: 409 }
       );
@@ -555,6 +566,8 @@ export async function POST(req: NextRequest) {
         accepted: true,
         declarationAcceptedAt: now,
         declarationAcceptedBy: user.id,
+        declarationAcceptedByEmail: user.email || null,
+        submitterFirmRole: userFirmRole,
         amendmentLockedAt: amendment.locked_at || null,
         amendmentLockedBy: amendment.locked_by || null,
         amendmentApprovedAt: amendment.approved_at || null,
@@ -598,7 +611,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (existingSnapshot?.is_final || existingSnapshot?.workflow_status === "submitted") {
+    if (
+      existingSnapshot?.is_final ||
+      existingSnapshot?.workflow_status === "submitted"
+    ) {
       await insertHmrcLog({
         firmId: client.firm_id,
         clientId: client.id,
@@ -612,6 +628,7 @@ export async function POST(req: NextRequest) {
         meta: {
           snapshot_id: existingSnapshot.id,
           idempotency_key: idempotencyKey,
+          user_firm_role: userFirmRole,
         },
       });
 
@@ -623,6 +640,7 @@ export async function POST(req: NextRequest) {
           snapshotId: existingSnapshot.id,
           hmrcSubmissionId: existingSnapshot.hmrc_submission_id || null,
           hmrcCorrelationId: existingSnapshot.hmrc_correlation_id || null,
+          userFirmRole,
         },
         { status: 409 }
       );
@@ -653,7 +671,10 @@ export async function POST(req: NextRequest) {
           submitted_totals: amendmentPayload.amendedTotals,
           hmrc_payload: amendmentPayload,
           hmrc_response: {},
-          environment: process.env.HMRC_ENVIRONMENT === "production" ? "production" : "sandbox",
+          environment:
+            process.env.HMRC_ENVIRONMENT === "production"
+              ? "production"
+              : "sandbox",
           submission_attempt: 1,
           submitted_by: user.id,
           submitted_by_email: user.email || null,
@@ -670,12 +691,14 @@ export async function POST(req: NextRequest) {
             amendment_id: amendment.id,
             user_id: user.id,
             user_email: user.email || null,
+            user_firm_role: userFirmRole,
           },
           audit_context: {
             original_final_declaration_id: finalDeclaration.id,
             original_hmrc_submission_id: originalSubmissionId,
             original_hmrc_correlation_id: originalCorrelationId,
             active_ledger_rows: activeLedgerRows.length,
+            user_firm_role: userFirmRole,
           },
           is_final: false,
           is_replayed: false,
@@ -776,6 +799,7 @@ export async function POST(req: NextRequest) {
               error_code: errorCode,
               error_message:
                 errorMessage || errorCode || "HMRC amendment submission failed",
+              user_firm_role: userFirmRole,
             },
           } as any)
           .eq("id", snapshotId);
@@ -803,6 +827,7 @@ export async function POST(req: NextRequest) {
             idempotency_key: idempotencyKey,
             original_final_declaration_id: finalDeclaration.id,
             original_hmrc_submission_id: originalSubmissionId,
+            user_firm_role: userFirmRole,
           },
         });
 
@@ -847,6 +872,7 @@ export async function POST(req: NextRequest) {
             payload_totals: amendmentPayload.amendedTotals,
             original_totals: amendmentPayload.originalTotals,
             variance: amendmentPayload.variance,
+            user_firm_role: userFirmRole,
           },
         });
 
@@ -862,6 +888,7 @@ export async function POST(req: NextRequest) {
             hmrcCalculationId,
             hmrcResponse: hmrcData,
             snapshotId,
+            userFirmRole,
           },
           { status: hmrcStatus || 400 }
         );
@@ -889,6 +916,7 @@ export async function POST(req: NextRequest) {
         payloadHash: hashes.payloadHash,
         ledgerHash: hashes.ledgerHash,
         totalsHash: hashes.totalsHash,
+        userFirmRole,
       };
     }
 
@@ -910,6 +938,7 @@ export async function POST(req: NextRequest) {
           hmrc_status: hmrcStatus,
           hmrc_calculation_id: hmrcCalculationId,
           active_ledger_rows: activeLedgerRows.length,
+          user_firm_role: userFirmRole,
         },
       } as any)
       .eq("id", snapshotId)
@@ -925,6 +954,7 @@ export async function POST(req: NextRequest) {
           hmrcSubmissionId,
           hmrcCorrelationId,
           snapshotId,
+          userFirmRole,
         },
         { status: 500 }
       );
@@ -968,6 +998,7 @@ export async function POST(req: NextRequest) {
           hmrcSubmissionId,
           hmrcCorrelationId,
           snapshotId,
+          userFirmRole,
         },
         { status: 500 }
       );
@@ -998,6 +1029,7 @@ export async function POST(req: NextRequest) {
         totals_hash: hashes.totalsHash,
         original_final_declaration_id: finalDeclaration.id,
         original_hmrc_submission_id: originalSubmissionId,
+        user_firm_role: userFirmRole,
       },
     });
 
@@ -1030,6 +1062,7 @@ export async function POST(req: NextRequest) {
         payload_totals: amendmentPayload.amendedTotals,
         original_totals: amendmentPayload.originalTotals,
         variance: amendmentPayload.variance,
+        user_firm_role: userFirmRole,
       },
     });
 
@@ -1055,6 +1088,7 @@ export async function POST(req: NextRequest) {
       hmrcCorrelationId,
       hmrcCalculationId,
       hmrcResponse: hmrcData,
+      userFirmRole,
     });
   } catch (error: any) {
     console.error("Submit amendment failed:", error);

@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
 
-const ADMIN_EMAILS = ["ikramzaman@gmail.com", "ikramzaman+test4@gmail.com"];
-
 export default function RegisterPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -17,8 +15,6 @@ export default function RegisterPage() {
 
   useEffect(() => {
     const checkInvite = async () => {
-      if (typeof window === "undefined") return;
-
       const params = new URLSearchParams(window.location.search);
       const token = params.get("invite");
 
@@ -33,7 +29,7 @@ export default function RegisterPage() {
         .from("firm_invitations")
         .select("*")
         .eq("token", token)
-        .single();
+        .maybeSingle();
 
       if (data) {
         setInviteData(data);
@@ -87,15 +83,30 @@ export default function RegisterPage() {
     }
 
     if (inviteData) {
-      const { error: linkError } = await supabase.from("firm_users").insert([
+      const invitedRole = inviteData.role || "staff";
+
+      const { error: linkError } = await supabase.from("firm_users").upsert(
         {
           firm_id: inviteData.firm_id,
           user_id: userId,
-          role: inviteData.role || "staff",
+          email: cleanEmail,
+          role: invitedRole,
+          is_active: true,
+          status: "active",
+          invited_by: inviteData.invited_by || null,
+          approved_by: inviteData.invited_by || null,
+          updated_at: new Date().toISOString(),
+          meta: {
+            source: "invite_acceptance",
+            invitation_id: inviteData.id,
+            membership_status: "accepted",
+            accepted_at: new Date().toISOString(),
+          },
         },
-      ]);
+        { onConflict: "firm_id,user_id" }
+      );
 
-      if (linkError && !linkError.message.toLowerCase().includes("duplicate")) {
+      if (linkError) {
         alert(linkError.message);
         setLoading(false);
         return;
@@ -109,8 +120,7 @@ export default function RegisterPage() {
         })
         .eq("id", inviteData.id);
 
-      alert("Account created and linked to firm successfully.");
-      window.location.href = "/app/clients";
+      window.location.href = "/dashboard/clients";
       return;
     }
 
@@ -144,7 +154,17 @@ export default function RegisterPage() {
       {
         firm_id: firmData.id,
         user_id: userId,
-        role: "owner",
+        email: cleanEmail,
+        role: "admin",
+        is_active: true,
+        status: "active",
+        approved_by: userId,
+        meta: {
+          source: "firm_registration",
+          membership_status: "accepted",
+          accepted_at: new Date().toISOString(),
+          production_note: "Initial firm administrator created during registration",
+        },
       },
     ]);
 
@@ -154,46 +174,26 @@ export default function RegisterPage() {
       return;
     }
 
-    alert("Account and firm created successfully.");
-
-    setTimeout(() => {
-      if (ADMIN_EMAILS.includes(cleanEmail)) {
-        window.location.href = "/admin/firms";
-      } else {
-        window.location.href = "/app/clients";
-      }
-    }, 300);
+    window.location.href = "/dashboard/clients";
   };
 
   if (checkingInvite) {
     return (
-      <main
-        style={{
-          minHeight: "100vh",
-          background: "#f6f8fb",
-          padding: 40,
-        }}
-      >
+      <main style={{ minHeight: "100vh", background: "#f6f8fb", padding: 40 }}>
         Loading...
       </main>
     );
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "#f6f8fb",
-        padding: 40,
-      }}
-    >
+    <main style={{ minHeight: "100vh", background: "#f6f8fb", padding: 40 }}>
       <div
         style={{
-          maxWidth: 460,
+          maxWidth: 480,
           margin: "80px auto",
           background: "white",
           padding: 30,
-          borderRadius: 12,
+          borderRadius: 16,
           border: "1px solid #e5e7eb",
         }}
       >
@@ -203,8 +203,8 @@ export default function RegisterPage() {
 
         <p style={{ color: "#64748b", fontSize: 14, marginBottom: 20 }}>
           {inviteData
-            ? "You were invited to join a firm workspace."
-            : "Create a private beta account for your accountancy firm."}
+            ? "Create your user account to join the firm workspace."
+            : "Create your firm workspace for Hala MTD."}
         </p>
 
         {inviteData && (
@@ -212,7 +212,7 @@ export default function RegisterPage() {
             style={{
               background: "#f8fafc",
               border: "1px solid #e5e7eb",
-              borderRadius: 10,
+              borderRadius: 12,
               padding: 14,
               marginBottom: 18,
             }}
@@ -220,7 +220,6 @@ export default function RegisterPage() {
             <p style={{ marginTop: 0 }}>
               <strong>Invited Email:</strong> {inviteData.email}
             </p>
-
             <p style={{ marginBottom: 0 }}>
               <strong>Role:</strong> {inviteData.role}
             </p>
@@ -232,13 +231,7 @@ export default function RegisterPage() {
             placeholder="Firm Name"
             value={firmName}
             onChange={(e) => setFirmName(e.target.value)}
-            style={{
-              width: "100%",
-              padding: 10,
-              marginBottom: 12,
-              borderRadius: 6,
-              border: "1px solid #ddd",
-            }}
+            style={inputStyle}
           />
         )}
 
@@ -248,11 +241,7 @@ export default function RegisterPage() {
           disabled={!!inviteData}
           onChange={(e) => setEmail(e.target.value)}
           style={{
-            width: "100%",
-            padding: 10,
-            marginBottom: 12,
-            borderRadius: 6,
-            border: "1px solid #ddd",
+            ...inputStyle,
             background: inviteData ? "#f3f4f6" : "white",
           }}
         />
@@ -265,13 +254,7 @@ export default function RegisterPage() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !loading) handleRegister();
           }}
-          style={{
-            width: "100%",
-            padding: 10,
-            marginBottom: 16,
-            borderRadius: 6,
-            border: "1px solid #ddd",
-          }}
+          style={inputStyle}
         />
 
         <button
@@ -279,12 +262,12 @@ export default function RegisterPage() {
           disabled={loading}
           style={{
             width: "100%",
-            padding: "10px 14px",
-            background: loading ? "#ccc" : "#0f172a",
+            padding: "11px 14px",
+            background: loading ? "#94a3b8" : "#0f172a",
             color: "white",
             border: "none",
-            borderRadius: 8,
-            fontWeight: 700,
+            borderRadius: 10,
+            fontWeight: 800,
             cursor: loading ? "not-allowed" : "pointer",
           }}
         >
@@ -295,11 +278,11 @@ export default function RegisterPage() {
             : "Register Firm"}
         </button>
 
-        <p style={{ marginTop: 15, fontSize: 14 }}>
+        <p style={{ marginTop: 16, fontSize: 14 }}>
           Already have an account?{" "}
           <a
             href={inviteToken ? `/auth/login?invite=${inviteToken}` : "/auth/login"}
-            style={{ color: "#2563eb" }}
+            style={{ color: "#2563eb", fontWeight: 700 }}
           >
             Login
           </a>
@@ -308,3 +291,11 @@ export default function RegisterPage() {
     </main>
   );
 }
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: 11,
+  marginBottom: 12,
+  borderRadius: 8,
+  border: "1px solid #d1d5db",
+};
