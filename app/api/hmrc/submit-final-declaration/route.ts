@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import { getValidHmrcToken } from "../../../../lib/hmrc/getValidHmrcToken";
 import { hmrcRequest } from "../../../../lib/hmrc/client";
 import { buildFraudHeaders } from "../../../../lib/hmrc/fraudHeaders";
+import { getTaxYearLedgerSnapshot } from "../../../../lib/quarterLedger";
 import {
   getAuthenticatedUserFromRequest,
   assertTaxYearAccess,
@@ -337,38 +338,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const annualIncome = money(
-      safeQuarters.reduce(
-        (sum: number, q: any) =>
-          sum +
-          Number(
-            q.income ||
-              q.income_total ||
-              q.total_income ||
-              q.turnover ||
-              q.sales ||
-              0
-          ),
-        0
-      )
-    );
+    const taxYearLedger = await getTaxYearLedgerSnapshot({
+  firmId: client.firm_id,
+  clientId: client.id,
+  taxYearId: taxYear.id,
+});
 
-    const annualExpenses = money(
-      safeQuarters.reduce(
-        (sum: number, q: any) =>
-          sum +
-          Number(
-            q.expenses ||
-              q.expense_total ||
-              q.total_expenses ||
-              q.allowable_expenses ||
-              0
-          ),
-        0
-      )
-    );
+const annualIncome = taxYearLedger.totals.income;
+const annualExpenses = taxYearLedger.totals.expenses;
+const annualProfit = taxYearLedger.totals.profit;
 
-    const annualProfit = money(annualIncome - annualExpenses);
+if (taxYearLedger.totals.transactionCount <= 0) {
+  return NextResponse.json(
+    {
+      success: false,
+      error:
+        "No active digital ledger transactions found for this tax year. Final Declaration must be derived from quarter_transactions.",
+    },
+    { status: 400 }
+  );
+}
 
     const nino =
       client.nino || client.ni_number || client.national_insurance_number || null;
@@ -410,35 +399,20 @@ export async function POST(req: NextRequest) {
         declarationAcceptedAt: now,
         declarationAcceptedBy: user.id,
       },
-      quarters: safeQuarters.map((q: any) => {
-        const income = money(
-          q.income ||
-            q.income_total ||
-            q.total_income ||
-            q.turnover ||
-            q.sales ||
-            0
-        );
-        const expenses = money(
-          q.expenses ||
-            q.expense_total ||
-            q.total_expenses ||
-            q.allowable_expenses ||
-            0
-        );
+      quarters: taxYearLedger.quarters.map((q: any) => ({
+  id: q.quarter.id,
+  quarterName: q.quarter.quarter_name,
+  startDate: q.quarter.start_date,
+  endDate: q.quarter.end_date,
+  status: q.quarter.status,
+  income: q.totals.income,
+  expenses: q.totals.expenses,
+  profit: q.totals.profit,
+  transactionCount: q.totals.transactionCount,
+  sourceTotals: q.sourceTotals,
+})),
+};
 
-        return {
-          id: q.id,
-          quarterName: q.quarter_name,
-          startDate: q.start_date,
-          endDate: q.end_date,
-          status: q.status,
-          income,
-          expenses,
-          profit: money(income - expenses),
-        };
-      }),
-    };
 
     let hmrcStatus = 200;
     let hmrcData: any = null;
