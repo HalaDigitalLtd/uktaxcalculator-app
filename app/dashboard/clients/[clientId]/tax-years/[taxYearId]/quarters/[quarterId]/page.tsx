@@ -1,61 +1,488 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../../../../../../lib/supabaseClient";
 
 type Row = Record<string, any>;
 
+type CategoryOption = {
+  value: string;
+  label: string;
+  type: "income" | "expense";
+};
+
+type CsvMapping = {
+  date: string;
+  description: string;
+  amount: string;
+  category: string;
+};
+
+type CsvPreviewRow = {
+  rowNumber: number;
+  raw: Row;
+  transaction_date: string;
+  description: string;
+  category: string;
+  entry_type: "income" | "expense";
+  amount: number;
+  import_row_hash: string;
+  status: "ready" | "duplicate" | "invalid";
+  issue: string;
+};
+
+const READY_STATUSES = [
+  "prepared",
+  "submitted",
+  "finalised",
+  "accepted",
+  "ready_to_submit",
+];
+
+const CATEGORY_OPTIONS: CategoryOption[] = [
+  { value: "turnover", label: "Turnover / Sales", type: "income" },
+  { value: "other_income", label: "Other Income", type: "income" },
+  { value: "cost_of_goods", label: "Cost Of Goods", type: "expense" },
+  { value: "rent", label: "Rent", type: "expense" },
+  { value: "utilities", label: "Utilities", type: "expense" },
+  { value: "software", label: "Software", type: "expense" },
+  { value: "travel", label: "Travel", type: "expense" },
+  { value: "motor_expenses", label: "Motor Expenses", type: "expense" },
+  { value: "professional_fees", label: "Professional Fees", type: "expense" },
+  { value: "advertising", label: "Advertising", type: "expense" },
+  { value: "telephone", label: "Telephone", type: "expense" },
+  { value: "insurance", label: "Insurance", type: "expense" },
+  { value: "repairs", label: "Repairs", type: "expense" },
+  { value: "salaries", label: "Salaries", type: "expense" },
+  { value: "subcontractors", label: "Subcontractors", type: "expense" },
+  { value: "mortgage_interest", label: "Mortgage Interest", type: "expense" },
+  { value: "agent_fees", label: "Agent Fees", type: "expense" },
+];
+
+function money(value: any) {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+  }).format(Number(value || 0));
+}
+
+function sourceLabel(value: any) {
+  const clean = String(value || "unknown").replaceAll("-", " ");
+  return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function toNumber(value: any) {
+  const clean = String(value ?? "")
+    .replaceAll(",", "")
+    .replaceAll("£", "")
+    .trim();
+
+  const n = Number(clean || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normaliseText(value: any) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function formatPeriod(start?: string, end?: string) {
+  if (!start && !end) return "Not mapped";
+  return `${start || "?"} to ${end || "?"}`;
+}
+
+function isDateWithinPeriod(date: string, start?: string, end?: string) {
+  if (!date || !start || !end) return true;
+  return date >= start && date <= end;
+}
+
+function getCategoryMeta(category: string) {
+  return (
+    CATEGORY_OPTIONS.find((option) => option.value === category) ||
+    CATEGORY_OPTIONS[0]
+  );
+}
+
+function normaliseDate(value: any) {
+  const raw = String(value || "").trim();
+
+  if (!raw) return "";
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const slashMatch = raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+
+  if (slashMatch) {
+    const day = slashMatch[1].padStart(2, "0");
+    const month = slashMatch[2].padStart(2, "0");
+    const year =
+      slashMatch[3].length === 2 ? `20${slashMatch[3]}` : slashMatch[3];
+
+    return `${year}-${month}-${day}`;
+  }
+
+  const parsed = new Date(raw);
+
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  return "";
+}
+
+function guessCategory(value: any) {
+  const clean = normaliseText(value).replaceAll(" ", "_").replaceAll("-", "_");
+
+  if (!clean) return "turnover";
+
+  const exact = CATEGORY_OPTIONS.find((option) => option.value === clean);
+  if (exact) return exact.value;
+
+  const byLabel = CATEGORY_OPTIONS.find(
+    (option) => normaliseText(option.label) === normaliseText(value)
+  );
+  if (byLabel) return byLabel.value;
+
+  if (clean.includes("rent")) return "rent";
+  if (clean.includes("software")) return "software";
+  if (clean.includes("travel")) return "travel";
+  if (clean.includes("motor")) return "motor_expenses";
+  if (clean.includes("professional")) return "professional_fees";
+  if (clean.includes("advert")) return "advertising";
+  if (clean.includes("phone") || clean.includes("telephone")) return "telephone";
+  if (clean.includes("insurance")) return "insurance";
+  if (clean.includes("repair")) return "repairs";
+  if (clean.includes("salary") || clean.includes("wage")) return "salaries";
+  if (clean.includes("subcontract")) return "subcontractors";
+  if (clean.includes("agent")) return "agent_fees";
+  if (clean.includes("mortgage")) return "mortgage_interest";
+  if (clean.includes("utility")) return "utilities";
+  if (clean.includes("cost")) return "cost_of_goods";
+
+  return "turnover";
+}
+
+function createImportRowHash(input: {
+  source_row_id: string;
+  transaction_date: string;
+  description: string;
+  category: string;
+  amount: number;
+}) {
+  return [
+    input.source_row_id,
+    input.transaction_date,
+    normaliseText(input.description),
+    input.category,
+    Number(input.amount || 0).toFixed(2),
+  ].join("|");
+}
+
+function parseCsvLine(line: string) {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      i += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  result.push(current.trim());
+  return result;
+}
+
+function parseCsvText(text: string) {
+  const lines = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .filter((line) => line.trim() !== "");
+
+  if (lines.length < 2) {
+    return { headers: [], rows: [] as Row[] };
+  }
+
+  const headers = parseCsvLine(lines[0]).map((header) => header.trim());
+
+  const rows = lines.slice(1).map((line) => {
+    const values = parseCsvLine(line);
+    const row: Row = {};
+
+    headers.forEach((header, index) => {
+      row[header] = values[index] ?? "";
+    });
+
+    return row;
+  });
+
+  return { headers, rows };
+}
+
+function inferMapping(headers: string[]): CsvMapping {
+  const findHeader = (terms: string[]) =>
+    headers.find((header) => {
+      const clean = normaliseText(header);
+      return terms.some((term) => clean.includes(term));
+    }) || "";
+
+  return {
+    date: findHeader(["date", "transaction date", "txn date"]),
+    description: findHeader(["description", "details", "narrative", "memo"]),
+    amount: findHeader(["amount", "value", "paid", "received", "gross"]),
+    category: findHeader(["category", "type", "nominal", "account"]),
+  };
+}
+
 export default function QuarterWorkspacePage() {
   const params = useParams();
   const router = useRouter();
 
-  const clientId = params.clientId as string;
-  const taxYearId = params.taxYearId as string;
-  const quarterId = params.quarterId as string;
+  const clientId = String(params.clientId || "");
+  const taxYearId = String(params.taxYearId || "");
+  const quarterId = String(params.quarterId || "");
 
   const [client, setClient] = useState<Row | null>(null);
   const [taxYear, setTaxYear] = useState<Row | null>(null);
   const [quarter, setQuarter] = useState<Row | null>(null);
-  const [finalWorkflow, setFinalWorkflow] = useState<Row | null>(null);
+  const [workflow, setWorkflow] = useState<Row | null>(null);
+
   const [firmId, setFirmId] = useState("");
+  const [authUser, setAuthUser] = useState<Row | null>(null);
+  const [membership, setMembership] = useState<Row | null>(null);
 
-  const [income, setIncome] = useState("0");
-  const [expenses, setExpenses] = useState("0");
-  const [status, setStatus] = useState("not_started");
+  const [sourceRows, setSourceRows] = useState<Row[]>([]);
+  const [transactions, setTransactions] = useState<Row[]>([]);
+  const [importBatches, setImportBatches] = useState<Row[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState("");
 
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [systemWarning, setSystemWarning] = useState("");
 
-  const taxYearIsImmutable = Boolean(
-    finalWorkflow?.submitted ||
-      finalWorkflow?.locked ||
-      finalWorkflow?.is_locked ||
-      finalWorkflow?.status === "submitted"
+  const [newTransaction, setNewTransaction] = useState<Row>({
+    transaction_date: "",
+    description: "",
+    category: "turnover",
+    amount: "",
+  });
+
+  const [editingTransactionId, setEditingTransactionId] = useState("");
+  const [showDeletedTransactions, setShowDeletedTransactions] = useState(false);
+
+  const [csvFileName, setCsvFileName] = useState("");
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  const [csvRows, setCsvRows] = useState<Row[]>([]);
+  const [csvMapping, setCsvMapping] = useState<CsvMapping>({
+    date: "",
+    description: "",
+    amount: "",
+    category: "",
+  });
+
+  const taxYearLocked = Boolean(
+    workflow?.submitted ||
+      workflow?.locked ||
+      workflow?.is_locked ||
+      workflow?.status === "submitted" ||
+      workflow?.status === "accepted"
   );
 
-  const money = (value: any) =>
-    new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency: "GBP",
-    }).format(Number(value || 0));
+  const selectedSource = useMemo(() => {
+    return sourceRows.find((row) => row.id === selectedSourceId) || null;
+  }, [sourceRows, selectedSourceId]);
 
-  const profit = useMemo(() => {
-    return Number(income || 0) - Number(expenses || 0);
-  }, [income, expenses]);
+  const sourceLocked = Boolean(
+    selectedSource?.locked ||
+      selectedSource?.status === "submitted" ||
+      selectedSource?.status === "accepted" ||
+      selectedSource?.last_submission_status === "accepted"
+  );
+
+  const workspaceLocked = taxYearLocked || sourceLocked;
+
+  const filteredTransactions = useMemo(() => {
+    if (!selectedSourceId) return [];
+
+    return transactions.filter((row) => {
+      if (row.source_row_id !== selectedSourceId) return false;
+      if (showDeletedTransactions) return true;
+      return row.is_deleted !== true;
+    });
+  }, [transactions, selectedSourceId, showDeletedTransactions]);
+
+  const activeTransactions = useMemo(() => {
+    return transactions.filter((row) => row.is_deleted !== true);
+  }, [transactions]);
+
+  const selectedImportBatches = useMemo(() => {
+    if (!selectedSourceId) return [];
+    return importBatches.filter((batch) => batch.source_row_id === selectedSourceId);
+  }, [importBatches, selectedSourceId]);
+
+  const totals = useMemo(() => {
+    let income = 0;
+    let expenses = 0;
+
+    filteredTransactions
+      .filter((row) => row.is_deleted !== true)
+      .forEach((row) => {
+        const amount = toNumber(row.amount);
+
+        if (row.entry_type === "income") income += amount;
+        if (row.entry_type === "expense") expenses += amount;
+      });
+
+    return {
+      income,
+      expenses,
+      profit: income - expenses,
+    };
+  }, [filteredTransactions]);
+
+  const csvPreviewRows = useMemo<CsvPreviewRow[]>(() => {
+    if (!selectedSource || csvRows.length === 0) return [];
+
+    const existingHashes = new Set(
+      activeTransactions.map((row) =>
+        String(
+          row.import_row_hash ||
+            createImportRowHash({
+              source_row_id: String(row.source_row_id || ""),
+              transaction_date: String(row.transaction_date || ""),
+              description: String(row.description || ""),
+              category: String(row.category || ""),
+              amount: toNumber(row.amount),
+            })
+        )
+      )
+    );
+
+    const seenInThisFile = new Set<string>();
+
+    return csvRows.map((row, index) => {
+      const transactionDate = normaliseDate(row[csvMapping.date]);
+      const description = String(row[csvMapping.description] || "").trim();
+      const category = guessCategory(row[csvMapping.category]);
+      const categoryMeta = getCategoryMeta(category);
+      const amount = Math.abs(toNumber(row[csvMapping.amount]));
+
+      const importRowHash = createImportRowHash({
+        source_row_id: selectedSource.id,
+        transaction_date: transactionDate,
+        description,
+        category,
+        amount,
+      });
+
+      let status: CsvPreviewRow["status"] = "ready";
+      let issue = "";
+
+      if (!transactionDate) {
+        status = "invalid";
+        issue = "Missing or invalid date";
+      } else if (
+        !isDateWithinPeriod(
+          transactionDate,
+          selectedSource.period_start || quarter?.start_date,
+          selectedSource.period_end || quarter?.end_date
+        )
+      ) {
+        status = "invalid";
+        issue = "Date outside HMRC period";
+      } else if (!description) {
+        status = "invalid";
+        issue = "Missing description";
+      } else if (amount <= 0) {
+        status = "invalid";
+        issue = "Missing or invalid amount";
+      } else if (existingHashes.has(importRowHash)) {
+        status = "duplicate";
+        issue = "Duplicate already in ledger";
+      } else if (seenInThisFile.has(importRowHash)) {
+        status = "duplicate";
+        issue = "Duplicate inside this CSV";
+      }
+
+      seenInThisFile.add(importRowHash);
+
+      return {
+        rowNumber: index + 2,
+        raw: row,
+        transaction_date: transactionDate,
+        description,
+        category,
+        entry_type: categoryMeta.type,
+        amount,
+        import_row_hash: importRowHash,
+        status,
+        issue,
+      };
+    });
+  }, [
+    activeTransactions,
+    csvMapping.amount,
+    csvMapping.category,
+    csvMapping.date,
+    csvMapping.description,
+    csvRows,
+    quarter?.end_date,
+    quarter?.start_date,
+    selectedSource,
+  ]);
+
+  const csvStats = useMemo(() => {
+    return {
+      total: csvPreviewRows.length,
+      ready: csvPreviewRows.filter((row) => row.status === "ready").length,
+      duplicate: csvPreviewRows.filter((row) => row.status === "duplicate").length,
+      invalid: csvPreviewRows.filter((row) => row.status === "invalid").length,
+    };
+  }, [csvPreviewRows]);
 
   const clientName = useMemo(() => {
     if (!client) return "Client";
+
     return (
       `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
+      client.client_name ||
+      client.name ||
       client.email ||
       "Client"
     );
   }, [client]);
 
-  const resolveFirmId = async () => {
+  const canUseWorkspace = Boolean(
+    authUser &&
+      firmId &&
+      membership &&
+      membership.status === "active" &&
+      membership.is_active === true
+  );
+
+  async function resolveFirmId() {
     const impersonatedFirmId =
       typeof window !== "undefined"
         ? localStorage.getItem("impersonate_firm_id")
@@ -66,223 +493,642 @@ export default function QuarterWorkspacePage() {
     });
 
     if (error || !data) {
-      throw new Error(error?.message || "No firm access found.");
+      throw new Error(error?.message || "No active firm access found.");
     }
 
     return String(data);
-  };
+  }
 
-  const loadData = async () => {
+  async function loadData(preferredSourceId?: string) {
     setLoading(true);
     setMessage("");
-
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !userData.user) {
-      router.replace("/auth/login");
-      return;
-    }
-
-    let resolvedFirmId = "";
+    setSystemWarning("");
 
     try {
-      resolvedFirmId = await resolveFirmId();
-      setFirmId(resolvedFirmId);
-    } catch (error: any) {
-      setMessage(error?.message || "No firm access found.");
-      setLoading(false);
-      return;
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+
+      if (authError) throw authError;
+
+      if (!authData.user) {
+        router.replace("/auth/login");
+        return;
+      }
+
+      setAuthUser(authData.user);
+
+      const resolvedFirmId = await resolveFirmId();
+
+      const { data: quarterData, error: quarterError } = await supabase
+        .from("quarters")
+        .select("*")
+        .eq("id", quarterId)
+        .eq("tax_year_id", taxYearId)
+        .maybeSingle();
+
+      if (quarterError) throw quarterError;
+
+      if (!quarterData) {
+        throw new Error(
+          "Quarter not found or your firm does not have access to this quarter."
+        );
+      }
+
+      const workspaceFirmId = String(quarterData.firm_id || resolvedFirmId);
+
+      setFirmId(workspaceFirmId);
+      setQuarter(quarterData);
+
+      const { data: membershipData, error: membershipError } = await supabase
+        .from("firm_users")
+        .select("firm_id,user_id,email,role,status,is_active")
+        .eq("firm_id", workspaceFirmId)
+        .eq("user_id", authData.user.id)
+        .maybeSingle();
+
+      if (membershipError) throw membershipError;
+
+      setMembership(membershipData || null);
+
+      if (
+        !membershipData ||
+        membershipData.status !== "active" ||
+        membershipData.is_active !== true
+      ) {
+        setSystemWarning(
+          "Your login is valid, but this user is not an active member of the firm that owns this quarter."
+        );
+      }
+
+      const { data: clientData, error: clientError } = await supabase
+        .from("clients")
+        .select("*")
+        .eq("id", clientId)
+        .eq("firm_id", workspaceFirmId)
+        .maybeSingle();
+
+      if (clientError) throw clientError;
+      setClient(clientData || null);
+
+      const { data: taxYearData, error: taxYearError } = await supabase
+        .from("tax_years")
+        .select("*")
+        .eq("id", taxYearId)
+        .eq("firm_id", workspaceFirmId)
+        .maybeSingle();
+
+      if (taxYearError) throw taxYearError;
+      setTaxYear(taxYearData || null);
+
+      const { data: workflowData, error: workflowError } = await supabase
+        .from("tax_year_final_declarations")
+        .select("*")
+        .eq("client_id", clientId)
+        .eq("tax_year_id", taxYearId)
+        .eq("firm_id", workspaceFirmId)
+        .maybeSingle();
+
+      if (workflowError) throw workflowError;
+      setWorkflow(workflowData || null);
+
+      const { data: sourceData, error: sourceError } = await supabase
+        .from("quarter_income_sources")
+        .select("*")
+        .eq("quarter_id", quarterId)
+        .eq("tax_year_id", taxYearId)
+        .eq("client_id", clientId)
+        .eq("firm_id", workspaceFirmId)
+        .order("hmrc_source", { ascending: true });
+
+      if (sourceError) throw sourceError;
+
+      const sources = sourceData || [];
+      setSourceRows(sources);
+
+      if (
+        preferredSourceId &&
+        sources.some((row) => row.id === preferredSourceId)
+      ) {
+        setSelectedSourceId(preferredSourceId);
+      } else if (
+        selectedSourceId &&
+        sources.some((row) => row.id === selectedSourceId)
+      ) {
+        setSelectedSourceId(selectedSourceId);
+      } else if (sources.length > 0) {
+        setSelectedSourceId(sources[0].id);
+      } else {
+        setSelectedSourceId("");
+      }
+
+      const { data: transactionData, error: txError } = await supabase
+        .from("quarter_transactions")
+        .select("*")
+        .eq("quarter_id", quarterId)
+        .eq("tax_year_id", taxYearId)
+        .eq("client_id", clientId)
+        .eq("firm_id", workspaceFirmId)
+        .order("transaction_date", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (txError) throw txError;
+      setTransactions(transactionData || []);
+
+      const { data: batchData, error: batchError } = await supabase
+        .from("csv_import_batches")
+        .select("*")
+        .eq("quarter_id", quarterId)
+        .eq("tax_year_id", taxYearId)
+        .eq("client_id", clientId)
+        .eq("firm_id", workspaceFirmId)
+        .order("created_at", { ascending: false });
+
+      if (batchError) throw batchError;
+      setImportBatches(batchData || []);
+
+      if (sources.length === 0 && membershipData?.is_active === true) {
+        setSystemWarning(
+          "No HMRC income sources are mapped for this quarter. Go back to the Tax Year Control Centre and run source mapping."
+        );
+      }
+    } catch (e: any) {
+      setMessage(e.message || "Failed loading workspace.");
     }
-
-    const { data: clientData, error: clientError } = await supabase
-      .from("clients")
-      .select("*")
-      .eq("id", clientId)
-      .eq("firm_id", resolvedFirmId)
-      .maybeSingle();
-
-    if (clientError || !clientData) {
-      setMessage(
-        clientError?.message ||
-          "Client not found or this firm does not have access."
-      );
-      setLoading(false);
-      return;
-    }
-
-    setClient(clientData);
-
-    const { data: taxYearData, error: taxYearError } = await supabase
-      .from("tax_years")
-      .select("*")
-      .eq("id", taxYearId)
-      .eq("client_id", clientId)
-      .eq("firm_id", resolvedFirmId)
-      .maybeSingle();
-
-    if (taxYearError || !taxYearData) {
-      setMessage(taxYearError?.message || "Tax year not found.");
-      setLoading(false);
-      return;
-    }
-
-    setTaxYear(taxYearData);
-
-    const { data: quarterData, error: quarterError } = await supabase
-      .from("quarters")
-      .select("*")
-      .eq("id", quarterId)
-      .eq("tax_year_id", taxYearId)
-      .eq("firm_id", resolvedFirmId)
-      .maybeSingle();
-
-    if (quarterError || !quarterData) {
-      setMessage(quarterError?.message || "Quarter not found.");
-      setLoading(false);
-      return;
-    }
-
-    setQuarter(quarterData);
-    setIncome(String(quarterData.income ?? 0));
-    setExpenses(String(quarterData.expenses ?? 0));
-    setStatus(quarterData.status || "not_started");
-
-    const { data: finalWorkflowData } = await supabase
-      .from("tax_year_final_declarations")
-      .select("*")
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .maybeSingle();
-
-    setFinalWorkflow(finalWorkflowData || null);
 
     setLoading(false);
-  };
+  }
 
   useEffect(() => {
-    if (clientId && taxYearId && quarterId) loadData();
+    if (clientId && taxYearId && quarterId) {
+      loadData();
+    }
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, taxYearId, quarterId]);
 
-  const saveQuarter = async () => {
-    if (taxYearIsImmutable) {
-      setMessage(
-        "This tax year is locked. Quarter edits are blocked. Start an amendment workflow instead."
-      );
+  async function recalculateSourceTotals(sourceRowId: string) {
+    if (!firmId) throw new Error("Firm context missing.");
+
+    const { data: rows, error } = await supabase
+      .from("quarter_transactions")
+      .select("amount, entry_type")
+      .eq("source_row_id", sourceRowId)
+      .eq("quarter_id", quarterId)
+      .eq("tax_year_id", taxYearId)
+      .eq("client_id", clientId)
+      .eq("firm_id", firmId)
+      .eq("is_deleted", false);
+
+    if (error) throw error;
+
+    let income = 0;
+    let expenses = 0;
+
+    (rows || []).forEach((row) => {
+      const amount = toNumber(row.amount);
+      if (row.entry_type === "income") income += amount;
+      if (row.entry_type === "expense") expenses += amount;
+    });
+
+    const { error: updateError } = await supabase
+      .from("quarter_income_sources")
+      .update({
+        income,
+        expenses,
+        profit: income - expenses,
+        status: (rows || []).length > 0 ? "draft" : "not_started",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", sourceRowId)
+      .eq("firm_id", firmId)
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .eq("quarter_id", quarterId);
+
+    if (updateError) throw updateError;
+  }
+
+  async function addTransaction() {
+    if (!canUseWorkspace) {
+      setMessage("You do not have active firm access for this workspace.");
       return;
     }
 
-    if (!firmId) {
-      setMessage("Firm not resolved. Please refresh and try again.");
+    if (workspaceLocked) {
+      setMessage("This source is locked. Use amendment workflow.");
+      return;
+    }
+
+    if (!selectedSource) {
+      setMessage("Select income source.");
+      return;
+    }
+
+    const amount = toNumber(newTransaction.amount);
+
+    if (!newTransaction.transaction_date) {
+      setMessage("Enter transaction date.");
+      return;
+    }
+
+    if (
+      !isDateWithinPeriod(
+        newTransaction.transaction_date,
+        selectedSource.period_start || quarter?.start_date,
+        selectedSource.period_end || quarter?.end_date
+      )
+    ) {
+      setMessage("Transaction date is outside this HMRC reporting period.");
+      return;
+    }
+
+    if (!String(newTransaction.description || "").trim()) {
+      setMessage("Enter transaction description.");
+      return;
+    }
+
+    if (amount <= 0) {
+      setMessage("Enter a positive amount.");
+      return;
+    }
+
+    const categoryMeta = getCategoryMeta(newTransaction.category);
+
+    setSaving(true);
+
+    try {
+      const payload = {
+        firm_id: firmId,
+        client_id: clientId,
+        tax_year_id: taxYearId,
+        quarter_id: quarterId,
+        source_row_id: selectedSource.id,
+        hmrc_source: selectedSource.hmrc_source,
+        hmrc_business_id: selectedSource.hmrc_business_id,
+        transaction_date: newTransaction.transaction_date,
+        description: String(newTransaction.description || "").trim(),
+        category: newTransaction.category,
+        entry_type: categoryMeta.type,
+        amount,
+        source_type: "manual",
+        attachment_urls: [],
+        updated_at: new Date().toISOString(),
+      };
+
+      if (editingTransactionId) {
+        const { error } = await supabase
+          .from("quarter_transactions")
+          .update({
+            ...payload,
+            edited_at: new Date().toISOString(),
+            edited_by: authUser?.id || null,
+          })
+          .eq("id", editingTransactionId)
+          .eq("firm_id", firmId)
+          .eq("client_id", clientId)
+          .eq("tax_year_id", taxYearId)
+          .eq("quarter_id", quarterId);
+
+        if (error) throw error;
+        setMessage("Transaction updated.");
+      } else {
+        const { error } = await supabase.from("quarter_transactions").insert(payload);
+        if (error) throw error;
+        setMessage("Transaction added.");
+      }
+
+      await recalculateSourceTotals(selectedSource.id);
+      await loadData(selectedSource.id);
+
+      setEditingTransactionId("");
+      setNewTransaction({
+        transaction_date: "",
+        description: "",
+        category: "turnover",
+        amount: "",
+      });
+    } catch (e: any) {
+      setMessage(e.message || "Failed saving transaction.");
+    }
+
+    setSaving(false);
+  }
+
+  function editTransaction(row: Row) {
+    if (workspaceLocked) {
+      setMessage("Locked records cannot be edited.");
+      return;
+    }
+
+    setEditingTransactionId(row.id);
+
+    setNewTransaction({
+      transaction_date: row.transaction_date || "",
+      description: row.description || "",
+      category: row.category || "turnover",
+      amount: String(row.amount || ""),
+    });
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function deleteTransaction(row: Row) {
+    if (workspaceLocked) {
+      setMessage("Locked records cannot be deleted.");
+      return;
+    }
+
+    const reason = window.prompt("Enter delete reason for audit trail:");
+
+    if (!reason || !reason.trim()) return;
+
+    setSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from("quarter_transactions")
+        .update({
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+          deleted_by: authUser?.id || null,
+          delete_reason: reason.trim(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", row.id)
+        .eq("firm_id", firmId)
+        .eq("client_id", clientId)
+        .eq("tax_year_id", taxYearId)
+        .eq("quarter_id", quarterId);
+
+      if (error) throw error;
+
+      await recalculateSourceTotals(row.source_row_id);
+      await loadData(selectedSourceId);
+
+      setMessage("Transaction deleted.");
+    } catch (e: any) {
+      setMessage(e.message || "Failed deleting transaction.");
+    }
+
+    setSaving(false);
+  }
+
+  async function markSourcePrepared() {
+    if (!canUseWorkspace) {
+      setMessage("You do not have active firm access for this workspace.");
+      return;
+    }
+
+    if (!selectedSource) {
+      setMessage("Select income source.");
+      return;
+    }
+
+    if (workspaceLocked) {
+      setMessage("This source is locked. Use amendment workflow.");
+      return;
+    }
+
+    if (filteredTransactions.filter((row) => row.is_deleted !== true).length === 0) {
+      setMessage("Add at least one transaction before marking prepared.");
       return;
     }
 
     setSaving(true);
-    setMessage("Saving quarter...");
+    setMessage("Preparing source...");
 
-    const incomeNumber = Number(income || 0);
-    const expensesNumber = Number(expenses || 0);
+    try {
+      await recalculateSourceTotals(selectedSource.id);
 
-    const { data, error } = await supabase
-      .from("quarters")
-      .update({
-        income: incomeNumber,
-        expenses: expensesNumber,
-        profit: incomeNumber - expensesNumber,
-        status,
-      })
-      .eq("id", quarterId)
-      .eq("tax_year_id", taxYearId)
-      .eq("firm_id", firmId)
-      .select("*")
-      .maybeSingle();
+      const { error } = await supabase
+        .from("quarter_income_sources")
+        .update({
+          status: "prepared",
+          bookkeeping_status: "prepared",
+          prepared_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", selectedSource.id)
+        .eq("firm_id", firmId)
+        .eq("client_id", clientId)
+        .eq("tax_year_id", taxYearId)
+        .eq("quarter_id", quarterId);
 
-    if (error) {
-      setMessage(`Save error: ${error.message}`);
-      setSaving(false);
-      return;
+      if (error) throw error;
+
+      await loadData(selectedSource.id);
+      setMessage("Income source prepared.");
+    } catch (e: any) {
+      setMessage(e.message || "Failed preparing source.");
     }
 
-    if (!data) {
-      setMessage(
-        "Save failed: no quarter row was updated. This usually means firm access or RLS blocked the update."
-      );
-      setSaving(false);
-      return;
-    }
-
-    setQuarter(data);
-    setIncome(String(data.income ?? 0));
-    setExpenses(String(data.expenses ?? 0));
-    setStatus(data.status || "not_started");
-
-    setMessage("Quarter saved successfully.");
     setSaving(false);
-  };
+  }
 
-  const markPrepared = async () => {
-    if (taxYearIsImmutable) {
-      setMessage(
-        "This tax year is locked. Quarter edits are blocked. Start an amendment workflow instead."
-      );
+  function resetCsvImport() {
+    setCsvFileName("");
+    setCsvHeaders([]);
+    setCsvRows([]);
+    setCsvMapping({
+      date: "",
+      description: "",
+      amount: "",
+      category: "",
+    });
+  }
+
+  async function handleCsvFile(file?: File | null) {
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setMessage("Please upload a CSV file.");
       return;
     }
 
-    setStatus("prepared");
+    const text = await file.text();
+    const parsed = parseCsvText(text);
 
-    if (!firmId) {
-      setMessage("Firm not resolved. Please refresh and try again.");
+    if (parsed.headers.length === 0 || parsed.rows.length === 0) {
+      setMessage("CSV could not be read. Please check headers and rows.");
       return;
     }
+
+    setCsvFileName(file.name);
+    setCsvHeaders(parsed.headers);
+    setCsvRows(parsed.rows);
+    setCsvMapping(inferMapping(parsed.headers));
+    setMessage(`CSV loaded: ${file.name}. Review mapping before import.`);
+  }
+
+  async function importCsvRows() {
+    if (!canUseWorkspace) {
+      setMessage("You do not have active firm access for this workspace.");
+      return;
+    }
+
+    if (workspaceLocked) {
+      setMessage("This source is locked. Use amendment workflow.");
+      return;
+    }
+
+    if (!selectedSource) {
+      setMessage("Select income source before importing CSV.");
+      return;
+    }
+
+    if (!csvMapping.date || !csvMapping.description || !csvMapping.amount) {
+      setMessage("Map Date, Description and Amount columns before importing.");
+      return;
+    }
+
+    const rowsToImport = csvPreviewRows.filter((row) => row.status === "ready");
+
+    if (rowsToImport.length === 0) {
+      setMessage("No valid non-duplicate CSV rows available to import.");
+      return;
+    }
+
+    const now = new Date().toISOString();
 
     setSaving(true);
-    setMessage("Marking quarter as prepared...");
+    setMessage("Creating import batch...");
 
-    const incomeNumber = Number(income || 0);
-    const expensesNumber = Number(expenses || 0);
+    try {
+      const { data: batch, error: batchError } = await supabase
+        .from("csv_import_batches")
+        .insert({
+          firm_id: firmId,
+          client_id: clientId,
+          tax_year_id: taxYearId,
+          quarter_id: quarterId,
+          source_row_id: selectedSource.id,
+          uploaded_by: authUser?.id || null,
+          file_name: csvFileName || "uploaded.csv",
+          imported_rows: rowsToImport.length,
+          duplicate_rows: csvStats.duplicate,
+          invalid_rows: csvStats.invalid,
+          raw_preview_snapshot: csvPreviewRows,
+          mapping_snapshot: csvMapping,
+          status: "imported",
+        })
+        .select("*")
+        .single();
 
-    const { data, error } = await supabase
-      .from("quarters")
-      .update({
-        income: incomeNumber,
-        expenses: expensesNumber,
-        profit: incomeNumber - expensesNumber,
-        status: "prepared",
-        prepared_at: new Date().toISOString(),
-      })
-      .eq("id", quarterId)
-      .eq("tax_year_id", taxYearId)
-      .eq("firm_id", firmId)
-      .select("*")
-      .maybeSingle();
+      if (batchError) throw batchError;
 
-    if (error) {
-      setMessage(`Prepare error: ${error.message}`);
-      setSaving(false);
-      return;
-    }
+      const payload = rowsToImport.map((row) => ({
+        firm_id: firmId,
+        client_id: clientId,
+        tax_year_id: taxYearId,
+        quarter_id: quarterId,
+        source_row_id: selectedSource.id,
+        hmrc_source: selectedSource.hmrc_source,
+        hmrc_business_id: selectedSource.hmrc_business_id,
+        transaction_date: row.transaction_date,
+        description: row.description,
+        category: row.category,
+        entry_type: row.entry_type,
+        amount: row.amount,
+        source_type: "csv_import",
+        import_batch_id: batch.id,
+        import_row_hash: row.import_row_hash,
+        import_row_number: row.rowNumber,
+        attachment_urls: [],
+        version_no: 1,
+        updated_at: now,
+      }));
 
-    if (!data) {
+      const { error } = await supabase.from("quarter_transactions").insert(payload);
+
+      if (error) throw error;
+
+      await recalculateSourceTotals(selectedSource.id);
+      await loadData(selectedSource.id);
+      resetCsvImport();
+
       setMessage(
-        "Prepare failed: no quarter row was updated. This usually means firm access or RLS blocked the update."
+        `CSV import complete. Imported ${rowsToImport.length} rows. Batch: ${batch.id}`
       );
-      setSaving(false);
+    } catch (e: any) {
+      setMessage(e.message || "CSV import failed.");
+    }
+
+    setSaving(false);
+  }
+
+  async function revertImportBatch(batch: Row) {
+    if (!canUseWorkspace || workspaceLocked) {
+      setMessage("This workspace is locked or your firm access is inactive.");
       return;
     }
 
-    setQuarter(data);
-    setIncome(String(data.income ?? 0));
-    setExpenses(String(data.expenses ?? 0));
-    setStatus(data.status || "prepared");
+    if (batch.status === "reverted") {
+      setMessage("This batch is already reverted.");
+      return;
+    }
 
-    setMessage("Quarter marked as prepared.");
+    const reason = window.prompt(
+      `Enter rollback reason for CSV batch ${batch.file_name}:`
+    );
+
+    if (!reason || !reason.trim()) return;
+
+    setSaving(true);
+    setMessage("Reverting CSV import batch...");
+
+    try {
+      const now = new Date().toISOString();
+
+      const { error: txError } = await supabase
+        .from("quarter_transactions")
+        .update({
+          is_deleted: true,
+          deleted_at: now,
+          deleted_by: authUser?.id || null,
+          delete_reason: `CSV batch reverted: ${reason.trim()}`,
+          updated_at: now,
+        })
+        .eq("firm_id", firmId)
+        .eq("client_id", clientId)
+        .eq("tax_year_id", taxYearId)
+        .eq("quarter_id", quarterId)
+        .eq("source_row_id", batch.source_row_id)
+        .eq("import_batch_id", batch.id)
+        .eq("source_type", "csv_import")
+        .eq("is_deleted", false);
+
+      if (txError) throw txError;
+
+      const { error: batchError } = await supabase
+        .from("csv_import_batches")
+        .update({
+          status: "reverted",
+          reverted_at: now,
+          reverted_by: authUser?.id || null,
+          revert_reason: reason.trim(),
+        })
+        .eq("id", batch.id)
+        .eq("firm_id", firmId)
+        .eq("client_id", clientId)
+        .eq("tax_year_id", taxYearId)
+        .eq("quarter_id", quarterId);
+
+      if (batchError) throw batchError;
+
+      await recalculateSourceTotals(batch.source_row_id);
+      await loadData(selectedSourceId);
+
+      setMessage("CSV import batch reverted. Related rows were soft-deleted.");
+    } catch (e: any) {
+      setMessage(e.message || "Failed reverting import batch.");
+    }
+
     setSaving(false);
-  };
+  }
 
   if (loading) {
     return (
       <main style={styles.page}>
-        <div style={styles.card}>Loading quarter workspace...</div>
+        <div style={styles.card}>Loading workspace...</div>
       </main>
     );
   }
@@ -295,172 +1141,569 @@ export default function QuarterWorkspacePage() {
             href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/summary`}
             style={styles.backLink}
           >
-            ← Back to Tax Year Control Centre
+            ← Back To Tax Year Control Centre
           </Link>
 
           <h1 style={styles.title}>Quarter Workspace</h1>
 
           <p style={styles.subtitle}>
-            Client: <strong>{clientName}</strong> · Tax year:{" "}
-            <strong>{taxYear?.year_label}</strong> · Quarter:{" "}
-            <strong>{quarter?.quarter_name}</strong>
+            Client: <strong>{clientName}</strong>
           </p>
 
           <p style={styles.subtitle}>
-            Period: <strong>{quarter?.start_date}</strong> to{" "}
-            <strong>{quarter?.end_date}</strong>
+            Tax Year:{" "}
+            <strong>{taxYear?.year_label || taxYear?.tax_year || "Tax Year"}</strong>{" "}
+            · Quarter: <strong>{quarter?.quarter_name || "Quarter"}</strong>
           </p>
         </div>
 
-        <div style={styles.actions}>
-          <button onClick={loadData} style={styles.secondaryButton}>
-            Refresh
-          </button>
-
-          <button
-            onClick={saveQuarter}
-            disabled={saving || taxYearIsImmutable}
-            style={taxYearIsImmutable ? styles.disabledButton : styles.primaryButton}
-          >
-            {taxYearIsImmutable ? "Locked" : saving ? "Saving..." : "Save Quarter"}
-          </button>
-        </div>
+        <button
+          onClick={() => loadData(selectedSourceId)}
+          style={styles.secondaryButton}
+        >
+          Refresh
+        </button>
       </div>
 
       {message && <div style={styles.message}>{message}</div>}
 
-      {taxYearIsImmutable && (
-        <section style={styles.lockBanner}>
-          <h2 style={styles.lockTitle}>Tax year locked</h2>
-          <p style={styles.lockText}>
-            Final Declaration has already been submitted or locked. Quarter edits are
-            blocked to preserve the original HMRC submission evidence.
-          </p>
-          <p style={styles.lockMeta}>
-            Use a separate amendment workflow for any post-submission corrections.
+      {systemWarning && (
+        <section style={styles.warningBox}>
+          <h2 style={styles.warningTitle}>Workspace Attention Required</h2>
+          <p style={styles.warningText}>{systemWarning}</p>
+        </section>
+      )}
+
+      {!canUseWorkspace && (
+        <section style={styles.warningBox}>
+          <h2 style={styles.warningTitle}>Firm Access Check</h2>
+          <p style={styles.warningText}>
+            Logged in user: <strong>{authUser?.email || "Unknown"}</strong>
+            <br />
+            Workspace firm: <strong>{firmId || "Unknown"}</strong>
+            <br />
+            Membership status:{" "}
+            <strong>{membership?.status || "No active membership found"}</strong>
           </p>
         </section>
       )}
 
-      <section style={styles.statsGrid}>
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Income</span>
-          <strong style={styles.statValue}>{money(income)}</strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Expenses</span>
-          <strong style={styles.statValue}>{money(expenses)}</strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Profit</span>
-          <strong style={styles.statValue}>{money(profit)}</strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Status</span>
-          <strong style={styles.statValueSmall}>{status}</strong>
-        </div>
-      </section>
+      {workspaceLocked && (
+        <section style={styles.lockBanner}>
+          <h2 style={styles.lockTitle}>Workspace Locked</h2>
+          <p style={styles.lockText}>
+            This tax year or HMRC source is locked. Direct ledger changes are
+            blocked. Use amendment workflow for changes after submission.
+          </p>
+        </section>
+      )}
 
       <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Quarter Figures</h2>
+        <h2 style={styles.sectionTitle}>HMRC Income Sources</h2>
 
-        <div style={styles.formGrid}>
-          <label style={styles.label}>
-            Income / Turnover
-            <input
-              type="number"
-              value={income}
-              disabled={taxYearIsImmutable}
-              onChange={(e) => setIncome(e.target.value)}
-              style={taxYearIsImmutable ? styles.disabledInput : styles.input}
-            />
-          </label>
-
-          <label style={styles.label}>
-            Allowable Expenses
-            <input
-              type="number"
-              value={expenses}
-              disabled={taxYearIsImmutable}
-              onChange={(e) => setExpenses(e.target.value)}
-              style={taxYearIsImmutable ? styles.disabledInput : styles.input}
-            />
-          </label>
-
-          <label style={styles.label}>
-            Status
-            <select
-              value={status}
-              disabled={taxYearIsImmutable}
-              onChange={(e) => setStatus(e.target.value)}
-              style={taxYearIsImmutable ? styles.disabledInput : styles.input}
-            >
-              <option value="not_started">not_started</option>
-              <option value="draft">draft</option>
-              <option value="prepared">prepared</option>
-              <option value="submitted">submitted</option>
-              <option value="failed">failed</option>
-            </select>
-          </label>
-        </div>
-
-        <div style={styles.buttonRow}>
-          <button
-            onClick={saveQuarter}
-            disabled={saving || taxYearIsImmutable}
-            style={taxYearIsImmutable ? styles.disabledButton : styles.primaryButton}
-          >
-            {taxYearIsImmutable ? "Locked" : "Save Quarter"}
-          </button>
-
-          <button
-            onClick={markPrepared}
-            disabled={saving || taxYearIsImmutable}
-            style={taxYearIsImmutable ? styles.disabledButton : styles.secondaryButton}
-          >
-            {taxYearIsImmutable ? "Locked" : "Mark Prepared"}
-          </button>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>HMRC Submission Readiness</h2>
-
-        <div style={styles.checkList}>
-          <div style={styles.checkRow}>
-            <span>HMRC connected</span>
-            <strong>{client?.hmrc_connected ? "Yes" : "No"}</strong>
+        {sourceRows.length === 0 && (
+          <div style={styles.emptyBox}>
+            No HMRC income sources found for this quarter.
           </div>
+        )}
 
-          <div style={styles.checkRow}>
-            <span>Income source</span>
-            <strong>{client?.hmrc_income_source_type || "Not set"}</strong>
-          </div>
+        <div style={styles.sourceGrid}>
+          {sourceRows.map((row) => {
+            const ready = READY_STATUSES.includes(String(row.status || ""));
 
-          <div style={styles.checkRow}>
-            <span>Obligation linked</span>
-            <strong>{quarter?.obligation_id ? "Yes" : "No"}</strong>
-          </div>
+            return (
+              <button
+                key={row.id}
+                onClick={() => setSelectedSourceId(row.id)}
+                style={{
+                  ...styles.sourceCard,
+                  border:
+                    selectedSourceId === row.id
+                      ? "2px solid #2563eb"
+                      : ready
+                        ? "2px solid #16a34a"
+                        : "1px solid #e5e7eb",
+                }}
+              >
+                <div style={styles.sourceTop}>
+                  <strong>{sourceLabel(row.hmrc_source)}</strong>
+                  <span style={styles.badge}>{row.status || "not_started"}</span>
+                </div>
 
-          <div style={styles.checkRow}>
-            <span>Ready to submit</span>
-            <strong>{status === "prepared" ? "Yes" : "No"}</strong>
-          </div>
+                <div style={styles.sourceMeta}>
+                  <div>
+                    Business ID:
+                    <br />
+                    {row.hmrc_business_id || "Not mapped"}
+                  </div>
 
-          <div style={styles.checkRow}>
-            <span>Post-submission edit lock</span>
-            <strong>{taxYearIsImmutable ? "Active" : "Not active"}</strong>
-          </div>
+                  <div>
+                    Period:
+                    <br />
+                    {formatPeriod(
+                      row.period_start || quarter?.start_date,
+                      row.period_end || quarter?.end_date
+                    )}
+                  </div>
+
+                  <div>
+                    Income:
+                    <br />
+                    {money(row.income)}
+                  </div>
+
+                  <div>
+                    Expenses:
+                    <br />
+                    {money(row.expenses)}
+                  </div>
+
+                  <div>
+                    Profit:
+                    <br />
+                    {money(row.profit)}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </section>
+
+      {selectedSource && (
+        <>
+          <section style={styles.statsGrid}>
+            <div style={styles.statCard}>
+              <span style={styles.statLabel}>Income</span>
+              <strong style={styles.statValue}>{money(totals.income)}</strong>
+            </div>
+
+            <div style={styles.statCard}>
+              <span style={styles.statLabel}>Expenses</span>
+              <strong style={styles.statValue}>{money(totals.expenses)}</strong>
+            </div>
+
+            <div style={styles.statCard}>
+              <span style={styles.statLabel}>Profit</span>
+              <strong style={styles.statValue}>{money(totals.profit)}</strong>
+            </div>
+
+            <div style={styles.statCard}>
+              <span style={styles.statLabel}>Transactions</span>
+              <strong style={styles.statValue}>
+                {filteredTransactions.filter((row) => row.is_deleted !== true).length}
+              </strong>
+            </div>
+          </section>
+
+          <section style={styles.card}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>CSV Import</h2>
+                <p style={styles.muted}>
+                  Import client bookkeeping records into the digital ledger.
+                  Preview, duplicate checks and batch evidence are preserved.
+                </p>
+              </div>
+
+              <button
+                onClick={resetCsvImport}
+                disabled={saving || csvRows.length === 0}
+                style={csvRows.length === 0 ? styles.disabledButton : styles.secondaryButton}
+              >
+                Clear Import
+              </button>
+            </div>
+
+            {!workspaceLocked && canUseWorkspace && (
+              <div style={styles.importBox}>
+                <label style={styles.label}>
+                  Upload CSV
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    onChange={(e) => handleCsvFile(e.target.files?.[0])}
+                    style={styles.input}
+                  />
+                </label>
+
+                {csvFileName && (
+                  <div style={styles.importInfo}>
+                    Loaded file: <strong>{csvFileName}</strong>
+                  </div>
+                )}
+
+                {csvHeaders.length > 0 && (
+                  <>
+                    <div style={styles.mappingGrid}>
+                      {(["date", "description", "amount", "category"] as const).map(
+                        (field) => (
+                          <label key={field} style={styles.label}>
+                            {field === "date"
+                              ? "Date Column"
+                              : field === "description"
+                                ? "Description Column"
+                                : field === "amount"
+                                  ? "Amount Column"
+                                  : "Category Column"}
+                            <select
+                              value={csvMapping[field]}
+                              onChange={(e) =>
+                                setCsvMapping({
+                                  ...csvMapping,
+                                  [field]: e.target.value,
+                                })
+                              }
+                              style={styles.input}
+                            >
+                              <option value="">
+                                {field === "category" ? "Optional" : "Select column"}
+                              </option>
+                              {csvHeaders.map((header) => (
+                                <option key={header} value={header}>
+                                  {header}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )
+                      )}
+                    </div>
+
+                    <div style={styles.csvStatsGrid}>
+                      <div style={styles.statMini}>Rows: {csvStats.total}</div>
+                      <div style={styles.statMini}>Ready: {csvStats.ready}</div>
+                      <div style={styles.statMini}>Duplicates: {csvStats.duplicate}</div>
+                      <div style={styles.statMini}>Invalid: {csvStats.invalid}</div>
+                    </div>
+
+                    <button
+                      onClick={importCsvRows}
+                      disabled={saving || csvStats.ready === 0}
+                      style={
+                        saving || csvStats.ready === 0
+                          ? styles.disabledButton
+                          : styles.primaryButton
+                      }
+                    >
+                      {saving ? "Importing..." : `Import ${csvStats.ready} Rows`}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {csvPreviewRows.length > 0 && (
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>CSV Row</th>
+                      <th style={styles.th}>Date</th>
+                      <th style={styles.th}>Description</th>
+                      <th style={styles.th}>Category</th>
+                      <th style={styles.th}>Type</th>
+                      <th style={styles.th}>Amount</th>
+                      <th style={styles.th}>Status</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {csvPreviewRows.slice(0, 50).map((row) => (
+                      <tr key={row.rowNumber}>
+                        <td style={styles.td}>{row.rowNumber}</td>
+                        <td style={styles.td}>{row.transaction_date || "-"}</td>
+                        <td style={styles.td}>{row.description || "-"}</td>
+                        <td style={styles.td}>{row.category}</td>
+                        <td style={styles.td}>{row.entry_type}</td>
+                        <td style={styles.td}>{money(row.amount)}</td>
+                        <td style={styles.td}>
+                          <span
+                            style={
+                              row.status === "ready"
+                                ? styles.readyBadge
+                                : row.status === "duplicate"
+                                  ? styles.duplicateBadge
+                                  : styles.deletedBadge
+                            }
+                          >
+                            {row.status}
+                          </span>
+                          {row.issue && <div style={styles.issueText}>{row.issue}</div>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section style={styles.card}>
+            <h2 style={styles.sectionTitle}>CSV Import History</h2>
+
+            {selectedImportBatches.length === 0 && (
+              <div style={styles.emptyBox}>No CSV import batches yet.</div>
+            )}
+
+            {selectedImportBatches.length > 0 && (
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Imported At</th>
+                      <th style={styles.th}>File</th>
+                      <th style={styles.th}>Imported</th>
+                      <th style={styles.th}>Duplicates</th>
+                      <th style={styles.th}>Invalid</th>
+                      <th style={styles.th}>Status</th>
+                      <th style={styles.th}>Action</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {selectedImportBatches.map((batch) => (
+                      <tr key={batch.id}>
+                        <td style={styles.td}>
+                          {batch.created_at
+                            ? new Date(batch.created_at).toLocaleString("en-GB")
+                            : "-"}
+                        </td>
+                        <td style={styles.td}>{batch.file_name}</td>
+                        <td style={styles.td}>{batch.imported_rows || 0}</td>
+                        <td style={styles.td}>{batch.duplicate_rows || 0}</td>
+                        <td style={styles.td}>{batch.invalid_rows || 0}</td>
+                        <td style={styles.td}>
+                          <span
+                            style={
+                              batch.status === "reverted"
+                                ? styles.deletedBadge
+                                : styles.readyBadge
+                            }
+                          >
+                            {batch.status}
+                          </span>
+                        </td>
+                        <td style={styles.td}>
+                          {batch.status !== "reverted" && !workspaceLocked && (
+                            <button
+                              onClick={() => revertImportBatch(batch)}
+                              style={styles.deleteButton}
+                              disabled={saving}
+                            >
+                              Revert Batch
+                            </button>
+                          )}
+
+                          {batch.status === "reverted" && (
+                            <span style={styles.issueText}>
+                              {batch.revert_reason || "Reverted"}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section style={styles.card}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Transaction Ledger</h2>
+                <p style={styles.muted}>
+                  Figures are derived from transaction records. Direct total editing
+                  is intentionally avoided for HMRC digital-link compliance.
+                </p>
+              </div>
+
+              <div style={styles.buttonRow}>
+                <label style={styles.checkboxLabel}>
+                  <input
+                    type="checkbox"
+                    checked={showDeletedTransactions}
+                    onChange={(e) => setShowDeletedTransactions(e.target.checked)}
+                  />
+                  Show deleted
+                </label>
+
+                <button
+                  onClick={markSourcePrepared}
+                  disabled={!canUseWorkspace || workspaceLocked || saving}
+                  style={
+                    !canUseWorkspace || workspaceLocked || saving
+                      ? styles.disabledButton
+                      : styles.primaryButton
+                  }
+                >
+                  Mark Prepared
+                </button>
+              </div>
+            </div>
+
+            {!workspaceLocked && canUseWorkspace && (
+              <div style={styles.newTxBox}>
+                <div style={styles.formGrid}>
+                  <label style={styles.label}>
+                    Date
+                    <input
+                      type="date"
+                      value={newTransaction.transaction_date}
+                      min={selectedSource.period_start || quarter?.start_date || undefined}
+                      max={selectedSource.period_end || quarter?.end_date || undefined}
+                      onChange={(e) =>
+                        setNewTransaction({
+                          ...newTransaction,
+                          transaction_date: e.target.value,
+                        })
+                      }
+                      style={styles.input}
+                    />
+                  </label>
+
+                  <label style={styles.label}>
+                    Description
+                    <input
+                      value={newTransaction.description}
+                      onChange={(e) =>
+                        setNewTransaction({
+                          ...newTransaction,
+                          description: e.target.value,
+                        })
+                      }
+                      style={styles.input}
+                    />
+                  </label>
+
+                  <label style={styles.label}>
+                    Category
+                    <select
+                      value={newTransaction.category}
+                      onChange={(e) =>
+                        setNewTransaction({
+                          ...newTransaction,
+                          category: e.target.value,
+                        })
+                      }
+                      style={styles.input}
+                    >
+                      {CATEGORY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={styles.label}>
+                    Amount
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={newTransaction.amount}
+                      onChange={(e) =>
+                        setNewTransaction({
+                          ...newTransaction,
+                          amount: e.target.value,
+                        })
+                      }
+                      style={styles.input}
+                    />
+                  </label>
+                </div>
+
+                <button
+                  onClick={addTransaction}
+                  disabled={saving}
+                  style={saving ? styles.disabledButton : styles.primaryButton}
+                >
+                  {saving
+                    ? "Saving..."
+                    : editingTransactionId
+                      ? "Update Transaction"
+                      : "Add Transaction"}
+                </button>
+              </div>
+            )}
+
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Date</th>
+                    <th style={styles.th}>Description</th>
+                    <th style={styles.th}>Category</th>
+                    <th style={styles.th}>Type</th>
+                    <th style={styles.th}>Amount</th>
+                    <th style={styles.th}>Source</th>
+                    <th style={styles.th}>Batch</th>
+                    <th style={styles.th}>Actions</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filteredTransactions.map((row) => (
+                    <tr key={row.id}>
+                      <td style={styles.td}>{row.transaction_date}</td>
+                      <td style={styles.td}>{row.description}</td>
+                      <td style={styles.td}>{row.category}</td>
+                      <td style={styles.td}>{row.entry_type}</td>
+                      <td style={styles.td}>{money(row.amount)}</td>
+                      <td style={styles.td}>{row.source_type || "manual"}</td>
+                      <td style={styles.td}>
+                        {row.import_batch_id
+                          ? String(row.import_batch_id).slice(0, 8)
+                          : "-"}
+                      </td>
+                      <td style={styles.td}>
+                        <div style={styles.actionRow}>
+                          {!workspaceLocked && row.is_deleted !== true && (
+                            <>
+                              <button
+                                onClick={() => editTransaction(row)}
+                                style={styles.smallButton}
+                              >
+                                Edit
+                              </button>
+
+                              <button
+                                onClick={() => deleteTransaction(row)}
+                                style={styles.deleteButton}
+                              >
+                                Delete
+                              </button>
+                            </>
+                          )}
+
+                          {row.is_deleted === true && (
+                            <span style={styles.deletedBadge}>Deleted</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+
+                  {filteredTransactions.length === 0 && (
+                    <tr>
+                      <td colSpan={8} style={styles.empty}>
+                        No transactions yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      )}
     </main>
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties> = {
   page: {
     minHeight: "100vh",
     background: "#f6f8fb",
@@ -471,29 +1714,127 @@ const styles: Record<string, React.CSSProperties> = {
   header: {
     display: "flex",
     justifyContent: "space-between",
-    gap: "24px",
+    gap: "20px",
     alignItems: "flex-start",
     marginBottom: "24px",
   },
   backLink: {
     color: "#2563eb",
     textDecoration: "none",
-    fontSize: "14px",
     fontWeight: 700,
+    fontSize: "14px",
   },
   title: {
-    margin: "10px 0 8px",
+    margin: "12px 0 8px",
     fontSize: "34px",
     fontWeight: 900,
   },
   subtitle: {
     margin: "4px 0",
     color: "#64748b",
-    fontSize: "15px",
   },
-  actions: {
+  card: {
+    background: "white",
+    border: "1px solid #e5e7eb",
+    borderRadius: "20px",
+    padding: "24px",
+    marginBottom: "20px",
+    boxShadow: "0 10px 25px rgba(15,23,42,0.05)",
+  },
+  sectionTitle: {
+    margin: "0 0 18px",
+    fontSize: "22px",
+    fontWeight: 900,
+  },
+  sourceGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+    gap: "16px",
+  },
+  sourceCard: {
+    background: "#fff",
+    borderRadius: "18px",
+    padding: "18px",
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  sourceTop: {
     display: "flex",
+    justifyContent: "space-between",
+    marginBottom: "12px",
     gap: "12px",
+  },
+  sourceMeta: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: "10px",
+    color: "#475569",
+    fontSize: "13px",
+  },
+  badge: {
+    padding: "4px 10px",
+    borderRadius: "999px",
+    background: "#eef2ff",
+    color: "#3730a3",
+    fontSize: "12px",
+    fontWeight: 800,
+    whiteSpace: "nowrap",
+  },
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+    gap: "16px",
+    marginBottom: "20px",
+  },
+  statCard: {
+    background: "white",
+    border: "1px solid #e5e7eb",
+    borderRadius: "18px",
+    padding: "20px",
+  },
+  statLabel: {
+    display: "block",
+    color: "#64748b",
+    fontSize: "13px",
+    fontWeight: 800,
+    marginBottom: "8px",
+  },
+  statValue: {
+    fontSize: "24px",
+    fontWeight: 900,
+  },
+  sectionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "20px",
+    alignItems: "flex-start",
+    marginBottom: "20px",
+  },
+  muted: {
+    margin: 0,
+    color: "#64748b",
+    fontSize: "14px",
+  },
+  formGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+    gap: "14px",
+  },
+  mappingGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+    gap: "14px",
+  },
+  label: {
+    display: "grid",
+    gap: "8px",
+    fontWeight: 700,
+    color: "#334155",
+  },
+  input: {
+    border: "1px solid #cbd5e1",
+    borderRadius: "12px",
+    padding: "12px",
   },
   primaryButton: {
     border: "none",
@@ -522,14 +1863,64 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     cursor: "not-allowed",
   },
+  tableWrap: {
+    overflowX: "auto",
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+  th: {
+    textAlign: "left",
+    padding: "12px",
+    borderBottom: "1px solid #e5e7eb",
+    color: "#64748b",
+    fontWeight: 800,
+  },
+  td: {
+    padding: "12px",
+    borderBottom: "1px solid #e5e7eb",
+  },
+  empty: {
+    padding: "30px",
+    textAlign: "center",
+    color: "#64748b",
+  },
+  emptyBox: {
+    padding: "18px",
+    border: "1px dashed #cbd5e1",
+    borderRadius: "14px",
+    color: "#64748b",
+    fontWeight: 700,
+    marginBottom: "16px",
+    background: "#f8fafc",
+  },
   message: {
     background: "#eef6ff",
     border: "1px solid #bfdbfe",
     color: "#1e3a8a",
-    padding: "14px 16px",
+    padding: "14px",
     borderRadius: "14px",
     marginBottom: "20px",
     fontWeight: 700,
+  },
+  warningBox: {
+    background: "#fff7ed",
+    border: "1px solid #fed7aa",
+    color: "#7c2d12",
+    padding: "18px",
+    borderRadius: "18px",
+    marginBottom: "20px",
+  },
+  warningTitle: {
+    margin: "0 0 8px",
+    fontSize: "20px",
+    fontWeight: 900,
+  },
+  warningText: {
+    margin: 0,
+    fontWeight: 700,
+    lineHeight: 1.6,
   },
   lockBanner: {
     background: "#fffbeb",
@@ -538,7 +1929,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "20px",
     borderRadius: "18px",
     marginBottom: "20px",
-    boxShadow: "0 10px 25px rgba(146, 64, 14, 0.08)",
   },
   lockTitle: {
     margin: "0 0 8px",
@@ -546,97 +1936,106 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
   },
   lockText: {
-    margin: "0 0 8px",
-    fontSize: "15px",
-    lineHeight: 1.6,
+    margin: 0,
     fontWeight: 700,
   },
-  lockMeta: {
-    margin: 0,
-    fontSize: "14px",
-    color: "#92400e",
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-    gap: "16px",
-    marginBottom: "20px",
-  },
-  statCard: {
+  smallButton: {
+    border: "1px solid #cbd5e1",
     background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: "18px",
-    padding: "20px",
-    boxShadow: "0 10px 25px rgba(15, 23, 42, 0.06)",
+    color: "#111827",
+    borderRadius: "10px",
+    padding: "6px 10px",
+    fontWeight: 700,
+    cursor: "pointer",
   },
-  statLabel: {
-    display: "block",
-    color: "#64748b",
-    fontSize: "13px",
+  deleteButton: {
+    border: "1px solid #fecaca",
+    background: "#fef2f2",
+    color: "#b91c1c",
+    borderRadius: "10px",
+    padding: "6px 10px",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  deletedBadge: {
+    background: "#e5e7eb",
+    color: "#374151",
+    borderRadius: "999px",
+    padding: "6px 10px",
+    fontSize: "12px",
     fontWeight: 800,
-    marginBottom: "8px",
-    textTransform: "uppercase",
+    display: "inline-block",
   },
-  statValue: {
-    fontSize: "24px",
-    fontWeight: 900,
+  readyBadge: {
+    background: "#dcfce7",
+    color: "#166534",
+    borderRadius: "999px",
+    padding: "6px 10px",
+    fontSize: "12px",
+    fontWeight: 800,
+    display: "inline-block",
   },
-  statValueSmall: {
-    fontSize: "18px",
-    fontWeight: 900,
+  duplicateBadge: {
+    background: "#fef3c7",
+    color: "#92400e",
+    borderRadius: "999px",
+    padding: "6px 10px",
+    fontSize: "12px",
+    fontWeight: 800,
+    display: "inline-block",
   },
-  card: {
-    background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: "20px",
-    padding: "24px",
-    boxShadow: "0 10px 25px rgba(15, 23, 42, 0.06)",
+  issueText: {
+    marginTop: "6px",
+    color: "#64748b",
+    fontSize: "12px",
+    fontWeight: 700,
+  },
+  newTxBox: {
     marginBottom: "20px",
-  },
-  sectionTitle: {
-    margin: "0 0 18px",
-    fontSize: "22px",
-    fontWeight: 900,
-  },
-  formGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
     gap: "16px",
   },
-  label: {
+  importBox: {
     display: "grid",
-    gap: "8px",
+    gap: "16px",
+    marginBottom: "20px",
+  },
+  importInfo: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: "12px",
+    padding: "12px",
+    color: "#334155",
+    fontWeight: 700,
+  },
+  csvStatsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+    gap: "12px",
+  },
+  statMini: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: "12px",
+    padding: "12px",
     fontWeight: 800,
     color: "#334155",
-  },
-  input: {
-    border: "1px solid #cbd5e1",
-    borderRadius: "12px",
-    padding: "12px",
-    fontSize: "15px",
-  },
-  disabledInput: {
-    border: "1px solid #d1d5db",
-    borderRadius: "12px",
-    padding: "12px",
-    fontSize: "15px",
-    background: "#f3f4f6",
-    color: "#6b7280",
-    cursor: "not-allowed",
   },
   buttonRow: {
     display: "flex",
     gap: "12px",
-    marginTop: "20px",
+    alignItems: "center",
   },
-  checkList: {
-    display: "grid",
-    gap: "12px",
-  },
-  checkRow: {
+  checkboxLabel: {
     display: "flex",
-    justifyContent: "space-between",
-    borderBottom: "1px solid #e5e7eb",
-    paddingBottom: "10px",
+    gap: "8px",
+    alignItems: "center",
+    color: "#334155",
+    fontWeight: 800,
+  },
+  actionRow: {
+    display: "flex",
+    gap: "8px",
+    alignItems: "center",
   },
 };

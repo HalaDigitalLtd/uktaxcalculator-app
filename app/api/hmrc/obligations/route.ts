@@ -173,25 +173,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!client.hmrc_connected && !client.hmrc_access_token) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Client is not marked as HMRC connected. Please complete HMRC connection first.",
-        },
-        { status: 400 }
-      );
-    }
-
     const accessToken = await getValidHmrcToken(client.firm_id);
 
-    if (!accessToken) {
-      return NextResponse.json(
-        { success: false, error: "No valid HMRC access token found." },
-        { status: 401 }
-      );
-    }
+if (!accessToken) {
+  return NextResponse.json(
+    {
+      success: false,
+      error: "HMRC connection not found. Please connect this firm to HMRC first.",
+      code: "HMRC_CONNECTION_REQUIRED",
+      connectRequired: true,
+      firmId: client.firm_id,
+      clientId: client.id,
+    },
+    { status: 401 }
+  );
+}
 
     const hmrcUrl = `https://test-api.service.hmrc.gov.uk/obligations/details/${nino}/income-and-expenditure`;
 
@@ -255,7 +251,15 @@ export async function POST(req: NextRequest) {
       hmrcData: data,
       correlationId,
     });
-
+await supabaseAdmin
+  .from("clients")
+  .update({
+    hmrc_connected: true,
+    hmrc_authorisation_status: "connected",
+    updated_at: new Date().toISOString(),
+  })
+  .eq("id", client.id)
+  .eq("firm_id", client.firm_id);
     const {
       provisionResult,
       matchResult,

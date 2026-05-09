@@ -308,10 +308,44 @@ export default function ClientDetailPage() {
       const result = await response.json();
 
       if (!response.ok || result?.success === false) {
-        setMessage(result?.error || result?.message || "HMRC sync failed.");
-        setSyncing(false);
-        return;
-      }
+  const needsHmrcConnect =
+    result?.connectRequired ||
+    result?.code === "HMRC_CONNECTION_REQUIRED" ||
+    String(result?.error || "")
+      .toLowerCase()
+      .includes("hmrc connection not found") ||
+    String(result?.error || "")
+      .toLowerCase()
+      .includes("no valid hmrc access token");
+
+  if (needsHmrcConnect) {
+    setMessage("HMRC connection required. Redirecting to HMRC sandbox...");
+    const connectResponse = await fetch("/api/hmrc/connect", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    const connectResult = await connectResponse.json();
+
+    if (!connectResponse.ok || !connectResult?.authUrl) {
+      setMessage(
+        connectResult?.error ||
+          "Unable to start HMRC connection. Please try from HMRC Connect page."
+      );
+      setSyncing(false);
+      return;
+    }
+
+    window.location.href = connectResult.authUrl;
+    return;
+  }
+
+  setMessage(result?.error || result?.message || "HMRC sync failed.");
+  setSyncing(false);
+  return;
+}
 
       setMessage(
         `HMRC obligations synced successfully. Saved: ${
