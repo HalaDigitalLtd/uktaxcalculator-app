@@ -876,103 +876,217 @@ export default function TaxYearSummaryPage() {
               </thead>
 
               <tbody>
-                {quarters.map((q) => {
-                  const sourceRows = sourceRowsByQuarter[q.id] || [];
+  {quarters.map((q) => {
+    const sourceRows = sourceRowsByQuarter[q.id] || [];
 
-                  const income =
-                    sourceRows.length > 0
-                      ? sourceRows.reduce(
-                          (sum, row) => sum + amount(row, ["income"]),
-                          0
-                        )
-                      : amount(q, ["income", "turnover", "sales"]);
+    const income =
+      sourceRows.length > 0
+        ? sourceRows.reduce(
+            (sum, row) => sum + amount(row, ["income"]),
+            0
+          )
+        : amount(q, ["income", "turnover", "sales"]);
 
-                  const expenses =
-                    sourceRows.length > 0
-                      ? sourceRows.reduce(
-                          (sum, row) => sum + amount(row, ["expenses"]),
-                          0
-                        )
-                      : amount(q, ["expenses", "allowable_expenses"]);
+    const expenses =
+      sourceRows.length > 0
+        ? sourceRows.reduce(
+            (sum, row) => sum + amount(row, ["expenses"]),
+            0
+          )
+        : amount(q, ["expenses", "allowable_expenses"]);
 
-                  const sourcePrepared =
-                    sourceRows.length > 0 &&
-                    sourceRows.every((row) =>
-                      [
-                        "prepared",
-                        "submitted",
-                        "finalised",
-                        "accepted",
-                        "ready_to_submit",
-                      ].includes(normalise(row.status))
+    const sourcePrepared =
+      sourceRows.length > 0 &&
+      sourceRows.every((row) =>
+        [
+          "prepared",
+          "submitted",
+          "finalised",
+          "accepted",
+          "ready_to_submit",
+        ].includes(normalise(row.status))
+      );
+
+    const sourceSubmitted =
+      sourceRows.length > 0 &&
+      sourceRows.every((row) =>
+        [
+          "submitted",
+          "accepted",
+          "finalised",
+        ].includes(normalise(row.status))
+      );
+
+    const quarterLocked =
+      sourceRows.length > 0 &&
+      sourceRows.every((row) =>
+        [
+          "submitted",
+          "accepted",
+          "finalised",
+        ].includes(normalise(row.status))
+      );
+
+    return (
+      <tr key={q.id}>
+        <td style={styles.td}>
+          <strong>{q.quarter_name || "Quarter"}</strong>
+        </td>
+
+        <td style={styles.td}>
+          {q.start_date || "?"} to {q.end_date || "?"}
+        </td>
+
+        <td style={styles.td}>
+          <span
+            style={
+              sourceSubmitted
+                ? styles.successBadge
+                : sourcePrepared
+                  ? styles.preparedBadge
+                  : styles.badge
+            }
+          >
+            {sourceSubmitted
+              ? "submitted"
+              : sourcePrepared
+                ? "prepared"
+                : sourceRows.length > 0
+                  ? "source review"
+                  : q.status || "not_started"}
+          </span>
+        </td>
+
+        <td style={styles.td}>
+          {sourceRows.length === 0 ? (
+            <span style={styles.muted}>No source rows</span>
+          ) : (
+            <div style={styles.sourceStack}>
+              {sourceRows.map((row) => (
+                <div key={row.id} style={styles.sourceLine}>
+                  <span style={styles.sourcePill}>
+                    {sourceLabel(row.hmrc_source)}
+                  </span>
+
+                  <span style={styles.sourceMeta}>
+                    {row.hmrc_business_id || "No business ID"} ·{" "}
+                    {row.status || "not_started"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </td>
+
+        <td style={styles.td}>{toMoney(income)}</td>
+
+        <td style={styles.td}>{toMoney(expenses)}</td>
+
+        <td style={styles.td}>
+          <strong>{toMoney(income - expenses)}</strong>
+        </td>
+
+        <td style={styles.td}>
+          <strong>{sourceRows.length}</strong>
+        </td>
+
+        <td style={styles.td}>
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              flexWrap: "wrap",
+            }}
+          >
+            {!taxYearIsImmutable && (
+              <Link
+                href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/quarters/${q.id}`}
+                style={styles.smallButton}
+              >
+                Open
+              </Link>
+            )}
+
+            {!taxYearIsImmutable &&
+              sourcePrepared &&
+              !sourceSubmitted && (
+                <button
+                  style={styles.submitQuarterButton}
+                  onClick={async () => {
+                    const confirmed = window.confirm(
+                      `Submit ${q.quarter_name} to HMRC?`
                     );
 
-                  return (
-                    <tr key={q.id}>
-                      <td style={styles.td}>
-                        <strong>{q.quarter_name || "Quarter"}</strong>
-                      </td>
+                    if (!confirmed) return;
 
-                      <td style={styles.td}>
-                        {q.start_date || "?"} to {q.end_date || "?"}
-                      </td>
+                    try {
+                      setMessage(
+                        `Submitting ${q.quarter_name} to HMRC...`
+                      );
 
-                      <td style={styles.td}>
-                        <span style={styles.badge}>
-                          {sourceRows.length > 0
-                            ? sourcePrepared
-                              ? "prepared"
-                              : "source review"
-                            : q.status || "not_started"}
-                        </span>
-                      </td>
+                      const session = await supabase.auth.getSession();
 
-                      <td style={styles.td}>
-                        {sourceRows.length === 0 ? (
-                          <span style={styles.muted}>No source rows</span>
-                        ) : (
-                          <div style={styles.sourceStack}>
-                            {sourceRows.map((row) => (
-                              <div key={row.id} style={styles.sourceLine}>
-                                <span style={styles.sourcePill}>
-                                  {sourceLabel(row.hmrc_source)}
-                                </span>
-                                <span style={styles.sourceMeta}>
-                                  {row.hmrc_business_id || "No business ID"} ·{" "}
-                                  {row.status || "not_started"}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </td>
+                      const token =
+                        session.data.session?.access_token;
 
-                      <td style={styles.td}>{toMoney(income)}</td>
-                      <td style={styles.td}>{toMoney(expenses)}</td>
-                      <td style={styles.td}>
-                        <strong>{toMoney(income - expenses)}</strong>
-                      </td>
+                      const response = await fetch(
+                        "/api/hmrc/submit-quarter",
+                        {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${token}`,
+                          },
+                          body: JSON.stringify({
+                            quarterId: q.id,
+                          }),
+                        }
+                      );
 
-                      <td style={styles.td}>
-                        <strong>{sourceRows.length}</strong>
-                      </td>
+                      const data = await response.json();
 
-                      <td style={styles.td}>
-                        {taxYearIsImmutable ? (
-                          <span style={styles.disabledButton}>Locked</span>
-                        ) : (
-                          <Link
-                            href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/quarters/${q.id}`}
-                            style={styles.smallButton}
-                          >
-                            Open
-                          </Link>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
+                      if (!response.ok || !data.success) {
+                        throw new Error(
+                          data.error ||
+                            data.message ||
+                            "HMRC submission failed"
+                        );
+                      }
+
+                      setMessage(
+                        `${q.quarter_name} submitted successfully to HMRC.`
+                      );
+
+                      await loadData();
+                    } catch (e: any) {
+                      setMessage(
+                        e.message ||
+                          "Quarter submission failed."
+                      );
+                    }
+                  }}
+                >
+                  Submit Quarter
+                </button>
+              )}
+
+            {quarterLocked && (
+              <span style={styles.lockedQuarterBadge}>
+                HMRC Submitted
+              </span>
+            )}
+
+            {taxYearIsImmutable && (
+              <span style={styles.disabledButton}>
+                Locked
+              </span>
+            )}
+          </div>
+        </td>
+      </tr>
+    );
+  })}
+</tbody>
             </table>
           </div>
         )}
@@ -1463,6 +1577,49 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     fontSize: "12px",
   },
+  preparedBadge: {
+  display: "inline-flex",
+  padding: "5px 9px",
+  borderRadius: "999px",
+  background: "#fef3c7",
+  color: "#92400e",
+  fontWeight: 800,
+  fontSize: "12px",
+},
+
+successBadge: {
+  display: "inline-flex",
+  padding: "5px 9px",
+  borderRadius: "999px",
+  background: "#dcfce7",
+  color: "#166534",
+  fontWeight: 800,
+  fontSize: "12px",
+},
+
+submitQuarterButton: {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "none",
+  background: "#16a34a",
+  color: "white",
+  padding: "8px 12px",
+  borderRadius: "10px",
+  fontWeight: 800,
+  cursor: "pointer",
+},
+
+lockedQuarterBadge: {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "#dcfce7",
+  color: "#166534",
+  padding: "8px 12px",
+  borderRadius: "10px",
+  fontWeight: 900,
+},
   sourceStack: {
     display: "grid",
     gap: "8px",
