@@ -43,12 +43,6 @@ function canonicalSourceType(value: string | null | undefined) {
   return normalised || "other";
 }
 
-function getTaxYearLabelFromEndDate(endDate: string) {
-  const endYear = new Date(endDate).getFullYear();
-  const startYear = endYear - 1;
-  return `${startYear}-${String(endYear).slice(-2)}`;
-}
-
 function getClientDisplayName(client: Row) {
   return (
     `${client?.first_name || ""} ${client?.last_name || ""}`.trim() ||
@@ -57,6 +51,12 @@ function getClientDisplayName(client: Row) {
     client?.client_email ||
     "HMRC Client"
   );
+}
+
+function getTaxYearLabelFromEndDate(endDate: string) {
+  const endYear = new Date(endDate).getFullYear();
+  const startYear = endYear - 1;
+  return `${startYear}-${String(endYear).slice(-2)}`;
 }
 
 function getObligationBusinesses(hmrcData: Row) {
@@ -214,13 +214,13 @@ async function resolveCanonicalIncomeSource(params: {
       correlationId,
       testScenario,
     },
-    sync_source: "hmrc_obligations_sync",
+    sync_source: "official_obligation_engine",
     environment: process.env.HMRC_ENVIRONMENT || "sandbox",
 
     metadata: {
       ...(existing?.metadata || {}),
       latest_sync: {
-        source: "hmrc_obligations_sync",
+        source: "official_obligation_engine",
         synced_at: now,
         correlationId,
         testScenario,
@@ -267,7 +267,7 @@ async function resolveCanonicalIncomeSource(params: {
         last_hmrc_sync_at: now,
       },
       performedBy,
-      reason: "HMRC obligations sync refreshed canonical income source.",
+      reason: "Official obligation engine refreshed canonical income source.",
     });
 
     return {
@@ -310,7 +310,7 @@ async function resolveCanonicalIncomeSource(params: {
       hmrc_evidence_status: "verified",
     },
     performedBy,
-    reason: "HMRC obligations sync created canonical income source.",
+    reason: "Official obligation engine created canonical income source.",
   });
 
   return {
@@ -364,6 +364,222 @@ async function saveIncomeSources(params: {
   return { saved, failed, created, updated, sourceMap };
 }
 
+async function saveOfficialObligations(params: {
+  firmId: string;
+  clientId: string;
+  hmrcData: Row;
+  correlationId: string | null;
+  sourceMap: Map<string, Row>;
+  testScenario: string;
+}) {
+  const { firmId, clientId, hmrcData, correlationId, sourceMap, testScenario } =
+    params;
+
+  let saved = 0;
+  let failed = 0;
+  let created = 0;
+  let updated = 0;
+  const obligationMap = new Map<string, Row>();
+
+  for (const business of getObligationBusinesses(hmrcData)) {
+    const businessId = business?.businessId;
+    const typeOfBusiness = business?.typeOfBusiness;
+    const sourceType = canonicalSourceType(typeOfBusiness);
+    const incomeSource = businessId ? sourceMap.get(businessId) : null;
+
+    if (!businessId || !typeOfBusiness || !incomeSource?.id) {
+      failed++;
+      continue;
+    }
+
+    for (const obligation of business.obligationDetails || []) {
+      const periodStart = obligation.periodStartDate;
+      const periodEnd = obligation.periodEndDate;
+
+      if (!periodStart || !periodEnd) {
+        failed++;
+        continue;
+      }
+
+      const now = new Date().toISOString();
+
+      const payload = {
+        firm_id: firmId,
+        client_id: clientId,
+        income_source_id: incomeSource.id,
+
+        hmrc_business_id: businessId,
+        canonical_source_type: sourceType,
+        obligation_type: "quarterly",
+
+        period_start: periodStart,
+        period_end: periodEnd,
+        due_date: obligation.dueDate || null,
+        received_date: obligation.receivedDate || null,
+
+        hmrc_status: obligation.status || "open",
+        local_status: "synced",
+
+        hmrc_obligation_detail: {
+          ...obligation,
+          businessId,
+          typeOfBusiness,
+          canonicalSourceType: sourceType,
+          canonicalIncomeSourceId: incomeSource.id,
+          sourceEvidenceStatus: incomeSource.hmrc_evidence_status,
+          correlationId,
+          testScenario,
+        },
+
+        sync_source: "official_obligation_engine",
+        environment: process.env.HMRC_ENVIRONMENT || "sandbox",
+        last_hmrc_sync_at: now,
+        updated_at: now,
+      };
+
+      const { data: existing, error: existingError } = await supabaseAdmin
+        .from("hmrc_obligations")
+        .select("*")
+        .eq("firm_id", firmId)
+        .eq("client_id", clientId)
+        .eq("income_source_id", incomeSource.id)
+        .eq("period_start", periodStart)
+        .eq("period_end", periodEnd)
+        .eq("obligation_type", "quarterly")
+        .maybeSingle();
+
+      if (existingError) {
+        failed++;
+        console.error("Official obligation lookup failed:", existingError);
+        continue;
+      }
+
+      if (existing?.id) {
+        const { data: updatedRow, error: updateError } = await supabaseAdmin
+          .from("hmrc_obligations")
+          .update(payload)
+          .eq("id", existing.id)
+          .select("*")
+          .single();
+
+        if (updateError) {
+          failed++;
+          console.error("Official obligation update failed:", updateError);
+          continue;
+        }
+
+        saved++;
+        updated++;
+        obligationMap.set(
+          `${businessId}_${periodStart}_${periodEnd}`,
+          updatedRow
+        );
+        continue;
+      }
+
+      const { data: inserted, error: insertError } = await supabaseAdmin
+        .from("hmrc_obligations")
+        .insert({
+          ...payload,
+          created_at: now,
+        })
+        .select("*")
+        .single();
+
+      if (insertError) {
+        failed++;
+        console.error("Official obligation insert failed:", insertError);
+        continue;
+      }
+
+      saved++;
+      created++;
+      obligationMap.set(`${businessId}_${periodStart}_${periodEnd}`, inserted);
+    }
+  }
+
+  return { saved, failed, created, updated, obligationMap };
+}
+
+async function mirrorLegacyObligations(params: {
+  firmId: string;
+  clientId: string;
+  hmrcData: Row;
+  correlationId: string | null;
+  sourceMap: Map<string, Row>;
+  obligationMap: Map<string, Row>;
+}) {
+  const { firmId, clientId, hmrcData, correlationId, sourceMap, obligationMap } =
+    params;
+
+  let saved = 0;
+  let failed = 0;
+
+  for (const business of getObligationBusinesses(hmrcData)) {
+    const businessId = business?.businessId;
+    const typeOfBusiness = business?.typeOfBusiness;
+    const incomeSource = businessId ? sourceMap.get(businessId) : null;
+
+    if (!businessId || !typeOfBusiness || !incomeSource?.id) {
+      failed++;
+      continue;
+    }
+
+    for (const obligation of business.obligationDetails || []) {
+      const periodStart = obligation.periodStartDate;
+      const periodEnd = obligation.periodEndDate;
+      const officialObligation = obligationMap.get(
+        `${businessId}_${periodStart}_${periodEnd}`
+      );
+
+      const periodKey = `${typeOfBusiness}_${businessId}_${periodStart}_${periodEnd}`;
+
+      const payload = {
+        client_id: clientId,
+        firm_id: firmId,
+
+        hmrc_business_id: businessId,
+        hmrc_business_type: typeOfBusiness,
+        hmrc_income_source_id: incomeSource.id,
+
+        period_key: periodKey,
+        start_date: periodStart,
+        end_date: periodEnd,
+        due_date: obligation.dueDate || null,
+        status: obligation.status || "open",
+
+        hmrc_source: typeOfBusiness,
+        hmrc_obligation_id: `${businessId}_${periodStart}_${periodEnd}`,
+
+        hmrc_response: {
+          ...obligation,
+          businessId,
+          typeOfBusiness,
+          canonicalSourceType: incomeSource.canonical_source_type,
+          canonicalIncomeSourceId: incomeSource.id,
+          officialObligationId: officialObligation?.id || null,
+          sourceEvidenceStatus: incomeSource.hmrc_evidence_status,
+          correlationId,
+          mirroredFrom: "hmrc_obligations",
+        },
+      };
+
+      const { error } = await supabaseAdmin.from("obligations").upsert(payload, {
+        onConflict: "client_id,period_key,start_date,end_date",
+      });
+
+      if (error) {
+        failed++;
+        console.error("Legacy obligation mirror failed:", error);
+      } else {
+        saved++;
+      }
+    }
+  }
+
+  return { saved, failed };
+}
+
 async function saveHmrcProfileSnapshot(params: {
   client: Row;
   user: Row;
@@ -394,7 +610,7 @@ async function saveHmrcProfileSnapshot(params: {
   const warnings = buildProfileWarnings(client, hmrcData);
 
   const profileSnapshot = {
-    source: "hmrc_obligations_sync",
+    source: "official_obligation_engine",
     testScenario,
     correlationId,
     obligationsBusinessCount: businesses.length,
@@ -428,7 +644,7 @@ async function saveHmrcProfileSnapshot(params: {
   await supabaseAdmin.from("hmrc_profile_snapshots").insert({
     firm_id: client.firm_id,
     client_id: client.id,
-    source: "hmrc_obligations_sync",
+    source: "official_obligation_engine",
     environment: process.env.HMRC_ENVIRONMENT || "sandbox",
 
     hmrc_user_id: client.hmrc_user_id || null,
@@ -451,7 +667,7 @@ async function saveHmrcProfileSnapshot(params: {
 
     raw_profile: profileSnapshot,
     raw_identity: {
-      source: "client_profile_plus_hmrc_obligations",
+      source: "client_profile_plus_official_obligation_engine",
       correlationId,
       detectedIncomeSources,
     },
@@ -510,77 +726,6 @@ async function saveHmrcProfileSnapshot(params: {
   };
 }
 
-async function saveObligations(params: {
-  firmId: string;
-  clientId: string;
-  hmrcData: Row;
-  correlationId: string | null;
-  sourceMap: Map<string, Row>;
-}) {
-  const { firmId, clientId, hmrcData, correlationId, sourceMap } = params;
-
-  let saved = 0;
-  let failed = 0;
-
-  for (const business of getObligationBusinesses(hmrcData)) {
-    const businessId = business?.businessId;
-    const typeOfBusiness = business?.typeOfBusiness;
-    const incomeSource = businessId ? sourceMap.get(businessId) : null;
-
-    if (!businessId || !typeOfBusiness || !incomeSource?.id) {
-      failed++;
-      continue;
-    }
-
-    for (const obligation of business.obligationDetails || []) {
-      const periodKey =
-        `${typeOfBusiness}_${businessId}_${obligation.periodStartDate}_${obligation.periodEndDate}`;
-
-      const payload = {
-        client_id: clientId,
-        firm_id: firmId,
-
-        hmrc_business_id: businessId,
-        hmrc_business_type: typeOfBusiness,
-        hmrc_income_source_id: incomeSource.id,
-
-        period_key: periodKey,
-        start_date: obligation.periodStartDate,
-        end_date: obligation.periodEndDate,
-        due_date: obligation.dueDate,
-        status: obligation.status,
-
-        hmrc_source: typeOfBusiness,
-        hmrc_obligation_id:
-          `${businessId}_${obligation.periodStartDate}_${obligation.periodEndDate}`,
-
-        hmrc_response: {
-          ...obligation,
-          businessId,
-          typeOfBusiness,
-          canonicalSourceType: incomeSource.canonical_source_type,
-          canonicalIncomeSourceId: incomeSource.id,
-          sourceEvidenceStatus: incomeSource.hmrc_evidence_status,
-          correlationId,
-        },
-      };
-
-      const { error } = await supabaseAdmin.from("obligations").upsert(payload, {
-        onConflict: "client_id,period_key,start_date,end_date",
-      });
-
-      if (error) {
-        failed++;
-        console.error("Obligation save failed:", error);
-      } else {
-        saved++;
-      }
-    }
-  }
-
-  return { saved, failed };
-}
-
 async function runProvisioning(clientId: string) {
   let provisionResult: any = null;
   let matchResult: any = null;
@@ -595,7 +740,7 @@ async function runProvisioning(clientId: string) {
   if (provisionError) {
     provisionErrorMessage = provisionError.message;
     console.error(
-      "Automatic tax year + quarter provisioning failed:",
+      "Tax year and quarter provisioning failed:",
       provisionError
     );
   } else {
@@ -611,11 +756,25 @@ async function runProvisioning(clientId: string) {
 
   if (matchError) {
     matchErrorMessage = matchError.message;
-    console.error("Automatic obligation-quarter matching failed:", matchError);
+    console.error("Obligation-quarter matching failed:", matchError);
   } else {
     matchResult = matchData;
   }
+const { data: qisaData, error: qisaError } = await supabaseAdmin.rpc(
+  "provision_quarter_income_sources_from_official_obligations",
+  {
+    p_client_id: clientId,
+  }
+);
 
+if (qisaError) {
+  console.error(
+    "Official quarter income source orchestration failed:",
+    qisaError
+  );
+} else {
+  console.log("Official quarter income source orchestration:", qisaData);
+}
   return {
     provisionResult,
     matchResult,
@@ -631,17 +790,30 @@ async function provisionQuarterIncomeSources(params: {
   const { firmId, clientId } = params;
 
   const { data: obligations, error: obligationsError } = await supabaseAdmin
-    .from("obligations")
+    .from("hmrc_obligations")
     .select(
-      "id, client_id, firm_id, hmrc_source, hmrc_business_id, hmrc_business_type, hmrc_income_source_id, start_date, end_date, status"
+      `
+      id,
+      client_id,
+      firm_id,
+      income_source_id,
+      hmrc_business_id,
+      canonical_source_type,
+      period_start,
+      period_end,
+      due_date,
+      hmrc_status,
+      local_status,
+      hmrc_obligation_detail
+    `
     )
     .eq("client_id", clientId)
     .eq("firm_id", firmId)
-    .order("start_date", { ascending: true });
+    .order("period_start", { ascending: true });
 
   if (obligationsError) {
     console.error(
-      "Quarter income source provisioning obligations load failed:",
+      "Official quarter income source provisioning load failed:",
       obligationsError
     );
     return {
@@ -659,28 +831,24 @@ async function provisionQuarterIncomeSources(params: {
   let failed = 0;
 
   for (const obligation of obligations || []) {
-    if (!obligation.hmrc_income_source_id) {
+    if (!obligation.income_source_id) {
       skipped++;
       continue;
     }
-
-    const sourceType = canonicalSourceType(
-      obligation.hmrc_business_type || obligation.hmrc_source
-    );
 
     const { data: taxYear, error: taxYearError } = await supabaseAdmin
       .from("tax_years")
       .select("id")
       .eq("client_id", clientId)
       .eq("firm_id", firmId)
-      .lte("start_date", obligation.start_date)
-      .gte("end_date", obligation.end_date)
+      .lte("start_date", obligation.period_start)
+      .gte("end_date", obligation.period_end)
       .maybeSingle();
 
     if (taxYearError || !taxYear?.id) {
       failed++;
-      console.error("Tax year missing for obligation:", {
-        obligationId: obligation.id,
+      console.error("Tax year missing for official obligation:", {
+        officialObligationId: obligation.id,
         taxYearError,
       });
       continue;
@@ -691,14 +859,14 @@ async function provisionQuarterIncomeSources(params: {
       .select("id")
       .eq("tax_year_id", taxYear.id)
       .eq("firm_id", firmId)
-      .eq("start_date", obligation.start_date)
-      .eq("end_date", obligation.end_date)
+      .eq("start_date", obligation.period_start)
+      .eq("end_date", obligation.period_end)
       .maybeSingle();
 
     if (quarterError || !quarter?.id) {
       failed++;
-      console.error("Quarter missing for obligation:", {
-        obligationId: obligation.id,
+      console.error("Quarter missing for official obligation:", {
+        officialObligationId: obligation.id,
         quarterError,
       });
       continue;
@@ -709,40 +877,63 @@ async function provisionQuarterIncomeSources(params: {
       .select(
         "id, hmrc_business_id, type_of_business, canonical_source_type, source_name, trading_name, accounting_type, display_name, source_status, hmrc_evidence_status"
       )
-      .eq("id", obligation.hmrc_income_source_id)
+      .eq("id", obligation.income_source_id)
       .eq("client_id", clientId)
       .eq("firm_id", firmId)
       .maybeSingle();
 
     if (incomeSourceError || !incomeSource?.id) {
       failed++;
-      console.error("Canonical HMRC income source lookup failed:", {
-        obligationId: obligation.id,
+      console.error("Canonical income source lookup failed:", {
+        officialObligationId: obligation.id,
         incomeSourceError,
+      });
+      continue;
+    }
+
+    const { data: legacyObligation, error: legacyObligationError } =
+      await supabaseAdmin
+        .from("obligations")
+        .select("id")
+        .eq("client_id", clientId)
+        .eq("firm_id", firmId)
+        .eq("hmrc_business_id", obligation.hmrc_business_id)
+        .eq("hmrc_income_source_id", incomeSource.id)
+        .eq("start_date", obligation.period_start)
+        .eq("end_date", obligation.period_end)
+        .maybeSingle();
+
+    if (legacyObligationError || !legacyObligation?.id) {
+      failed++;
+      console.error("Legacy compatibility obligation missing:", {
+        officialObligationId: obligation.id,
+        legacyObligationError,
+        reason:
+          "quarter_income_sources.obligation_id still references legacy obligations.id, while official_obligation_id stores the new engine id.",
       });
       continue;
     }
 
     const { data: existing, error: existingError } = await supabaseAdmin
       .from("quarter_income_sources")
-      .select("id, canonical_income_source_id, hmrc_income_source_id")
+      .select("id")
       .eq("client_id", clientId)
       .eq("firm_id", firmId)
       .eq("quarter_id", quarter.id)
-      .eq("obligation_id", obligation.id)
+      .eq("official_obligation_id", obligation.id)
       .maybeSingle();
 
     if (existingError) {
       failed++;
-      console.error("Quarter income source duplicate check failed:", existingError);
+      console.error("Quarter income source lookup failed:", existingError);
       continue;
     }
 
     const evidenceVerified = incomeSource.hmrc_evidence_status === "verified";
+    const now = new Date().toISOString();
 
-    const sourceEvidenceSnapshot = {
-      canonical_income_source_id: incomeSource.id,
-      hmrc_income_source_id: incomeSource.id,
+    const sourceSnapshot = {
+      income_source_id: incomeSource.id,
       hmrc_business_id: incomeSource.hmrc_business_id,
       canonical_source_type: incomeSource.canonical_source_type,
       type_of_business: incomeSource.type_of_business,
@@ -752,32 +943,46 @@ async function provisionQuarterIncomeSources(params: {
       accounting_type: incomeSource.accounting_type,
       source_status: incomeSource.source_status,
       hmrc_evidence_status: incomeSource.hmrc_evidence_status,
-      verified_at: new Date().toISOString(),
-      verification_method:
-        "canonical_registry_from_hmrc_obligation_income_source",
+      verified_at: now,
+      verification_method: "official_obligation_engine",
     };
 
-    const basePayload = {
+    const basePayload: Row = {
       firm_id: firmId,
       client_id: clientId,
       tax_year_id: taxYear.id,
       quarter_id: quarter.id,
-      obligation_id: obligation.id,
 
-      hmrc_source: obligation.hmrc_source,
-      hmrc_business_id: obligation.hmrc_business_id,
-      canonical_source_type: sourceType,
+      obligation_id: legacyObligation.id,
+      official_obligation_id: obligation.id,
 
+      income_source_id: incomeSource.id,
       hmrc_income_source_id: incomeSource.id,
       canonical_income_source_id: incomeSource.id,
 
-      period_start: obligation.start_date,
-      period_end: obligation.end_date,
+      hmrc_source: obligation.canonical_source_type,
+      hmrc_business_id: obligation.hmrc_business_id,
+      canonical_source_type: obligation.canonical_source_type,
 
+      period_start: obligation.period_start,
+      period_end: obligation.period_end,
+      due_date: obligation.due_date,
+
+      hmrc_obligation_status: obligation.hmrc_status,
       source_evidence_status: evidenceVerified ? "verified" : "unverified",
-      source_evidence_snapshot: sourceEvidenceSnapshot,
+      source_evidence_snapshot: sourceSnapshot,
 
-      updated_at: new Date().toISOString(),
+      obligation_engine_status:
+        obligation.hmrc_status === "fulfilled" ? "fulfilled" : "open",
+      obligation_locked: obligation.hmrc_status === "fulfilled",
+      obligation_locked_at:
+        obligation.hmrc_status === "fulfilled" ? now : null,
+      obligation_lock_reason:
+        obligation.hmrc_status === "fulfilled"
+          ? "HMRC obligation is already fulfilled."
+          : null,
+
+      updated_at: now,
     };
 
     if (existing?.id) {
@@ -802,7 +1007,16 @@ async function provisionQuarterIncomeSources(params: {
       income: 0,
       expenses: 0,
       profit: 0,
-      created_at: new Date().toISOString(),
+      bookkeeping_status: "not_started",
+      review_status: "not_started",
+      submission_due_status: "open",
+      deadline_metadata: {
+        source: "official_obligation_engine",
+        due_date: obligation.due_date,
+        hmrc_status: obligation.hmrc_status,
+        generated_at: now,
+      },
+      created_at: now,
     };
 
     const { error: insertError } = await supabaseAdmin
@@ -948,12 +1162,22 @@ export async function POST(req: NextRequest) {
       performedBy: user.id,
     });
 
-    const { saved, failed } = await saveObligations({
+    const officialObligationSync = await saveOfficialObligations({
       firmId: client.firm_id,
       clientId: client.id,
       hmrcData: data,
       correlationId,
       sourceMap: incomeSourceSync.sourceMap,
+      testScenario,
+    });
+
+    const legacyMirror = await mirrorLegacyObligations({
+      firmId: client.firm_id,
+      clientId: client.id,
+      hmrcData: data,
+      correlationId,
+      sourceMap: incomeSourceSync.sourceMap,
+      obligationMap: officialObligationSync.obligationMap,
     });
 
     const profileSync = await saveHmrcProfileSnapshot({
@@ -989,14 +1213,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       message:
-        "HMRC obligations synced through canonical income source registry successfully.",
+        "HMRC obligations synced through official obligation engine successfully.",
+
       firmId: client.firm_id,
       clientId: client.id,
       clientName: getClientDisplayName(client),
       nino,
 
-      saved,
-      failed,
+      officialObligationsSaved: officialObligationSync.saved,
+      officialObligationsCreated: officialObligationSync.created,
+      officialObligationsUpdated: officialObligationSync.updated,
+      officialObligationsFailed: officialObligationSync.failed,
+
+      legacyObligationsMirrored: legacyMirror.saved,
+      legacyObligationsMirrorFailed: legacyMirror.failed,
 
       incomeSourcesSaved: incomeSourceSync.saved,
       incomeSourcesCreated: incomeSourceSync.created,
@@ -1029,7 +1259,7 @@ export async function POST(req: NextRequest) {
       profileSync,
     });
   } catch (error: any) {
-    console.error("HMRC obligations sync failed:", error);
+    console.error("Official HMRC obligation engine sync failed:", error);
 
     const message = error?.message || "Unknown error.";
 
