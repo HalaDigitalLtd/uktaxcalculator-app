@@ -70,7 +70,15 @@ function money(value: any) {
 }
 
 function sourceLabel(value: any) {
-  const clean = String(value || "unknown").replaceAll("-", " ");
+  const clean = String(value || "unknown")
+    .replaceAll("-", " ")
+    .replaceAll("_", " ");
+
+  return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function evidenceLabel(value: any) {
+  const clean = String(value || "unverified").replaceAll("_", " ");
   return clean.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -255,6 +263,12 @@ function inferMapping(headers: string[]): CsvMapping {
   };
 }
 
+function evidenceBadgeStyle(status: any): CSSProperties {
+  return String(status || "").toLowerCase() === "verified"
+    ? styles.verifiedBadge
+    : styles.unverifiedBadge;
+}
+
 export default function QuarterWorkspacePage() {
   const params = useParams();
   const router = useRouter();
@@ -339,7 +353,9 @@ export default function QuarterWorkspacePage() {
 
   const selectedImportBatches = useMemo(() => {
     if (!selectedSourceId) return [];
-    return importBatches.filter((batch) => batch.source_row_id === selectedSourceId);
+    return importBatches.filter(
+      (batch) => batch.source_row_id === selectedSourceId
+    );
   }, [importBatches, selectedSourceId]);
 
   const totals = useMemo(() => {
@@ -457,7 +473,8 @@ export default function QuarterWorkspacePage() {
     return {
       total: csvPreviewRows.length,
       ready: csvPreviewRows.filter((row) => row.status === "ready").length,
-      duplicate: csvPreviewRows.filter((row) => row.status === "duplicate").length,
+      duplicate: csvPreviewRows.filter((row) => row.status === "duplicate")
+        .length,
       invalid: csvPreviewRows.filter((row) => row.status === "invalid").length,
     };
   }, [csvPreviewRows]);
@@ -597,6 +614,7 @@ export default function QuarterWorkspacePage() {
         .eq("tax_year_id", taxYearId)
         .eq("client_id", clientId)
         .eq("firm_id", workspaceFirmId)
+        .order("canonical_source_type", { ascending: true })
         .order("hmrc_source", { ascending: true });
 
       if (sourceError) throw sourceError;
@@ -647,7 +665,7 @@ export default function QuarterWorkspacePage() {
 
       if (sources.length === 0 && membershipData?.is_active === true) {
         setSystemWarning(
-          "No HMRC income sources are mapped for this quarter. Go back to the Tax Year Control Centre and run source mapping."
+          "No HMRC income sources are mapped for this quarter. Go back to the Tax Year Control Centre and run HMRC sync/source mapping."
         );
       }
     } catch (e: any) {
@@ -791,7 +809,10 @@ export default function QuarterWorkspacePage() {
         if (error) throw error;
         setMessage("Transaction updated.");
       } else {
-        const { error } = await supabase.from("quarter_transactions").insert(payload);
+        const { error } = await supabase
+          .from("quarter_transactions")
+          .insert(payload);
+
         if (error) throw error;
         setMessage("Transaction added.");
       }
@@ -888,7 +909,16 @@ export default function QuarterWorkspacePage() {
       return;
     }
 
-    if (filteredTransactions.filter((row) => row.is_deleted !== true).length === 0) {
+    if (selectedSource.source_evidence_status !== "verified") {
+      setMessage(
+        "This HMRC source is not verified. Run HMRC sync/source mapping before preparing."
+      );
+      return;
+    }
+
+    if (
+      filteredTransactions.filter((row) => row.is_deleted !== true).length === 0
+    ) {
       setMessage("Add at least one transaction before marking prepared.");
       return;
     }
@@ -905,6 +935,7 @@ export default function QuarterWorkspacePage() {
           status: "prepared",
           bookkeeping_status: "prepared",
           prepared_at: new Date().toISOString(),
+          prepared_by: authUser?.id || null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", selectedSource.id)
@@ -975,6 +1006,13 @@ export default function QuarterWorkspacePage() {
       return;
     }
 
+    if (selectedSource.source_evidence_status !== "verified") {
+      setMessage(
+        "This HMRC source is not verified. Run HMRC sync/source mapping before importing."
+      );
+      return;
+    }
+
     if (!csvMapping.date || !csvMapping.description || !csvMapping.amount) {
       setMessage("Map Date, Description and Amount columns before importing.");
       return;
@@ -1037,7 +1075,9 @@ export default function QuarterWorkspacePage() {
         updated_at: now,
       }));
 
-      const { error } = await supabase.from("quarter_transactions").insert(payload);
+      const { error } = await supabase
+        .from("quarter_transactions")
+        .insert(payload);
 
       if (error) throw error;
 
@@ -1210,6 +1250,7 @@ export default function QuarterWorkspacePage() {
         <div style={styles.sourceGrid}>
           {sourceRows.map((row) => {
             const ready = READY_STATUSES.includes(String(row.status || ""));
+            const verified = row.source_evidence_status === "verified";
 
             return (
               <button
@@ -1222,12 +1263,20 @@ export default function QuarterWorkspacePage() {
                       ? "2px solid #2563eb"
                       : ready
                         ? "2px solid #16a34a"
-                        : "1px solid #e5e7eb",
+                        : verified
+                          ? "1px solid #bbf7d0"
+                          : "1px solid #fed7aa",
                 }}
               >
                 <div style={styles.sourceTop}>
                   <strong>{sourceLabel(row.hmrc_source)}</strong>
-                  <span style={styles.badge}>{row.status || "not_started"}</span>
+
+                  <div style={styles.badgeStack}>
+                    <span style={styles.badge}>{row.status || "not_started"}</span>
+                    <span style={evidenceBadgeStyle(row.source_evidence_status)}>
+                      {evidenceLabel(row.source_evidence_status)}
+                    </span>
+                  </div>
                 </div>
 
                 <div style={styles.sourceMeta}>
@@ -1238,12 +1287,26 @@ export default function QuarterWorkspacePage() {
                   </div>
 
                   <div>
+                    Canonical Type:
+                    <br />
+                    {sourceLabel(row.canonical_source_type || row.hmrc_source)}
+                  </div>
+
+                  <div>
                     Period:
                     <br />
                     {formatPeriod(
                       row.period_start || quarter?.start_date,
                       row.period_end || quarter?.end_date
                     )}
+                  </div>
+
+                  <div>
+                    HMRC Source Link:
+                    <br />
+                    {row.hmrc_income_source_id
+                      ? String(row.hmrc_income_source_id).slice(0, 8)
+                      : "Not linked"}
                   </div>
 
                   <div>
@@ -1291,9 +1354,81 @@ export default function QuarterWorkspacePage() {
             <div style={styles.statCard}>
               <span style={styles.statLabel}>Transactions</span>
               <strong style={styles.statValue}>
-                {filteredTransactions.filter((row) => row.is_deleted !== true).length}
+                {
+                  filteredTransactions.filter((row) => row.is_deleted !== true)
+                    .length
+                }
               </strong>
             </div>
+          </section>
+
+          <section style={styles.card}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Selected HMRC Source Evidence</h2>
+                <p style={styles.muted}>
+                  This quarter workspace is linked to the HMRC detected income
+                  source. Submissions must use this source-level context.
+                </p>
+              </div>
+
+              <span
+                style={evidenceBadgeStyle(selectedSource.source_evidence_status)}
+              >
+                {evidenceLabel(selectedSource.source_evidence_status)}
+              </span>
+            </div>
+
+            <div style={styles.evidenceGrid}>
+              <div style={styles.evidenceItem}>
+                <span style={styles.evidenceLabel}>HMRC Source</span>
+                <strong>{sourceLabel(selectedSource.hmrc_source)}</strong>
+              </div>
+
+              <div style={styles.evidenceItem}>
+                <span style={styles.evidenceLabel}>Canonical Source Type</span>
+                <strong>
+                  {sourceLabel(
+                    selectedSource.canonical_source_type ||
+                      selectedSource.hmrc_source
+                  )}
+                </strong>
+              </div>
+
+              <div style={styles.evidenceItem}>
+                <span style={styles.evidenceLabel}>HMRC Business ID</span>
+                <strong>{selectedSource.hmrc_business_id || "Not mapped"}</strong>
+              </div>
+
+              <div style={styles.evidenceItem}>
+                <span style={styles.evidenceLabel}>HMRC Income Source Link</span>
+                <strong>
+                  {selectedSource.hmrc_income_source_id || "Not linked"}
+                </strong>
+              </div>
+
+              <div style={styles.evidenceItem}>
+                <span style={styles.evidenceLabel}>Obligation Row</span>
+                <strong>{selectedSource.obligation_id || "Not mapped"}</strong>
+              </div>
+
+              <div style={styles.evidenceItem}>
+                <span style={styles.evidenceLabel}>Period</span>
+                <strong>
+                  {formatPeriod(
+                    selectedSource.period_start || quarter?.start_date,
+                    selectedSource.period_end || quarter?.end_date
+                  )}
+                </strong>
+              </div>
+            </div>
+
+            {selectedSource.source_evidence_status !== "verified" && (
+              <div style={styles.warningInline}>
+                This source is not HMRC verified. Do not submit this source until
+                HMRC sync/source mapping has linked it to hmrc_income_sources.
+              </div>
+            )}
           </section>
 
           <section style={styles.card}>
@@ -1309,7 +1444,11 @@ export default function QuarterWorkspacePage() {
               <button
                 onClick={resetCsvImport}
                 disabled={saving || csvRows.length === 0}
-                style={csvRows.length === 0 ? styles.disabledButton : styles.secondaryButton}
+                style={
+                  csvRows.length === 0
+                    ? styles.disabledButton
+                    : styles.secondaryButton
+                }
               >
                 Clear Import
               </button>
@@ -1357,7 +1496,9 @@ export default function QuarterWorkspacePage() {
                               style={styles.input}
                             >
                               <option value="">
-                                {field === "category" ? "Optional" : "Select column"}
+                                {field === "category"
+                                  ? "Optional"
+                                  : "Select column"}
                               </option>
                               {csvHeaders.map((header) => (
                                 <option key={header} value={header}>
@@ -1373,8 +1514,12 @@ export default function QuarterWorkspacePage() {
                     <div style={styles.csvStatsGrid}>
                       <div style={styles.statMini}>Rows: {csvStats.total}</div>
                       <div style={styles.statMini}>Ready: {csvStats.ready}</div>
-                      <div style={styles.statMini}>Duplicates: {csvStats.duplicate}</div>
-                      <div style={styles.statMini}>Invalid: {csvStats.invalid}</div>
+                      <div style={styles.statMini}>
+                        Duplicates: {csvStats.duplicate}
+                      </div>
+                      <div style={styles.statMini}>
+                        Invalid: {csvStats.invalid}
+                      </div>
                     </div>
 
                     <button
@@ -1429,7 +1574,9 @@ export default function QuarterWorkspacePage() {
                           >
                             {row.status}
                           </span>
-                          {row.issue && <div style={styles.issueText}>{row.issue}</div>}
+                          {row.issue && (
+                            <div style={styles.issueText}>{row.issue}</div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1524,7 +1671,9 @@ export default function QuarterWorkspacePage() {
                   <input
                     type="checkbox"
                     checked={showDeletedTransactions}
-                    onChange={(e) => setShowDeletedTransactions(e.target.checked)}
+                    onChange={(e) =>
+                      setShowDeletedTransactions(e.target.checked)
+                    }
                   />
                   Show deleted
                 </label>
@@ -1551,8 +1700,14 @@ export default function QuarterWorkspacePage() {
                     <input
                       type="date"
                       value={newTransaction.transaction_date}
-                      min={selectedSource.period_start || quarter?.start_date || undefined}
-                      max={selectedSource.period_end || quarter?.end_date || undefined}
+                      min={
+                        selectedSource.period_start ||
+                        quarter?.start_date ||
+                        undefined
+                      }
+                      max={
+                        selectedSource.period_end || quarter?.end_date || undefined
+                      }
                       onChange={(e) =>
                         setNewTransaction({
                           ...newTransaction,
@@ -1771,6 +1926,12 @@ const styles: Record<string, CSSProperties> = {
     color: "#475569",
     fontSize: "13px",
   },
+  badgeStack: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: "6px",
+  },
   badge: {
     padding: "4px 10px",
     borderRadius: "999px",
@@ -1779,6 +1940,26 @@ const styles: Record<string, CSSProperties> = {
     fontSize: "12px",
     fontWeight: 800,
     whiteSpace: "nowrap",
+  },
+  verifiedBadge: {
+    padding: "4px 10px",
+    borderRadius: "999px",
+    background: "#dcfce7",
+    color: "#166534",
+    fontSize: "12px",
+    fontWeight: 900,
+    whiteSpace: "nowrap",
+    display: "inline-block",
+  },
+  unverifiedBadge: {
+    padding: "4px 10px",
+    borderRadius: "999px",
+    background: "#ffedd5",
+    color: "#9a3412",
+    fontSize: "12px",
+    fontWeight: 900,
+    whiteSpace: "nowrap",
+    display: "inline-block",
   },
   statsGrid: {
     display: "grid",
@@ -1814,6 +1995,35 @@ const styles: Record<string, CSSProperties> = {
     margin: 0,
     color: "#64748b",
     fontSize: "14px",
+  },
+  evidenceGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "14px",
+  },
+  evidenceItem: {
+    border: "1px solid #e5e7eb",
+    background: "#f8fafc",
+    borderRadius: "14px",
+    padding: "14px",
+    display: "grid",
+    gap: "6px",
+    overflowWrap: "anywhere",
+  },
+  evidenceLabel: {
+    color: "#64748b",
+    fontSize: "12px",
+    fontWeight: 900,
+    textTransform: "uppercase",
+  },
+  warningInline: {
+    marginTop: "16px",
+    padding: "14px",
+    borderRadius: "14px",
+    border: "1px solid #fed7aa",
+    background: "#fff7ed",
+    color: "#9a3412",
+    fontWeight: 800,
   },
   formGrid: {
     display: "grid",
