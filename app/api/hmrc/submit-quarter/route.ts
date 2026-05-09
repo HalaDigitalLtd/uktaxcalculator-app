@@ -602,7 +602,7 @@ export async function POST(req: NextRequest) {
           attempt_number: (previousLogs?.length || 0) + 1,
           is_amendment: isAmendment,
           payload: {
-            source: "quarter_transactions",
+            source: "posted ledger_entries",
             sourceModel: "quarter_income_sources",
             quarter,
             client: {

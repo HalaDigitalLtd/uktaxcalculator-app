@@ -12,7 +12,10 @@ export function normaliseLedgerType(row: any) {
 }
 
 export function isActiveLedgerRow(row: any) {
-  return row?.is_deleted !== true;
+  return (
+    row?.locked !== true &&
+    String(row?.posting_status || "posted").toLowerCase() === "posted"
+  );
 }
 
 export function calculateLedgerTotals(rows: any[]) {
@@ -42,7 +45,7 @@ export async function getQuarterLedgerSnapshot(input: {
   quarterId: string;
 }) {
   const { data: transactions, error: txError } = await supabaseAdmin
-    .from("quarter_transactions")
+    .from("ledger_entries")
     .select("*")
     .eq("firm_id", input.firmId)
     .eq("client_id", input.clientId)
@@ -63,12 +66,13 @@ export async function getQuarterLedgerSnapshot(input: {
     .eq("client_id", input.clientId)
     .eq("tax_year_id", input.taxYearId)
     .eq("quarter_id", input.quarterId)
+    .order("canonical_source_type", { ascending: true })
     .order("hmrc_source", { ascending: true });
 
   if (sourceError) throw sourceError;
 
   const { data: batches, error: batchError } = await supabaseAdmin
-    .from("csv_import_batches")
+    .from("ledger_batches")
     .select("*")
     .eq("firm_id", input.firmId)
     .eq("client_id", input.clientId)
@@ -80,7 +84,8 @@ export async function getQuarterLedgerSnapshot(input: {
 
   const sourceTotals = (sources || []).map((source: any) => {
     const rows = activeTransactions.filter(
-      (tx: any) => String(tx.source_row_id) === String(source.id)
+      (tx: any) =>
+        String(tx.quarter_income_source_id || "") === String(source.id)
     );
 
     const sourceTotal = calculateLedgerTotals(rows);
@@ -88,21 +93,34 @@ export async function getQuarterLedgerSnapshot(input: {
     return {
       sourceRowId: source.id,
       obligationId: source.obligation_id || null,
-      hmrcSource: source.hmrc_source || null,
+      officialObligationId: source.official_obligation_id || null,
+      incomeSourceId:
+        source.income_source_id ||
+        source.hmrc_income_source_id ||
+        source.canonical_income_source_id ||
+        null,
+      hmrcSource: source.hmrc_source || source.canonical_source_type || null,
+      canonicalSourceType: source.canonical_source_type || null,
       hmrcBusinessId: source.hmrc_business_id || null,
       periodStart: source.period_start || null,
       periodEnd: source.period_end || null,
       status: source.status || null,
+      workflowState: source.workflow_state || null,
+      sourceEvidenceStatus: source.source_evidence_status || null,
       income: sourceTotal.income,
       expenses: sourceTotal.expenses,
       profit: sourceTotal.profit,
       transactionCount: sourceTotal.transactionCount,
+      ledgerEntryIds: rows.map((row: any) => row.id),
+      ledgerBatchIds: Array.from(
+        new Set(rows.map((row: any) => row.ledger_batch_id).filter(Boolean))
+      ),
     };
   });
 
   return {
     transactions: activeTransactions,
-    allTransactionsIncludingDeleted: transactions || [],
+    allTransactionsIncludingExcluded: transactions || [],
     sources: sources || [],
     batches: batches || [],
     totals,
