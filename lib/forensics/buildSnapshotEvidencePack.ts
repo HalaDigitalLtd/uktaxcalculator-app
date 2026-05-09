@@ -1,3 +1,4 @@
+import { validateSnapshotFreeze } from "./validateSnapshotFreeze";
 type Row = Record<string, any>;
 
 function countItems(value: any) {
@@ -38,6 +39,7 @@ export function buildSnapshotEvidencePack(snapshot: Row) {
   ];
 
   const warnings = checks.filter((check) => !check.ok);
+  const freezeValidation = validateSnapshotFreeze(snapshot);
 
   const freezeStatus = {
     isImmutableRecord: true,
@@ -105,6 +107,7 @@ export function buildSnapshotEvidencePack(snapshot: Row) {
     generatedAt: new Date().toISOString(),
 
     freezeStatus,
+    freezeValidation,
     digitalLink,
     tamperRisk,
 
