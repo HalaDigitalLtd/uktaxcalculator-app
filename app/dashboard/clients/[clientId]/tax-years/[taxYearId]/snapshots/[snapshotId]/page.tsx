@@ -11,6 +11,7 @@ import { HashEvidenceGrid } from "../../../../../../../components/forensics/Hash
 import { ImmutableBanner } from "../../../../../../../components/forensics/ImmutableBanner";
 import { JsonEvidenceCard } from "../../../../../../../components/forensics/JsonEvidenceCard";
 import { LineagePanel } from "../../../../../../../components/forensics/LineagePanel";
+import { buildSnapshotEvidencePack } from "../../../../../../../../lib/forensics/buildSnapshotEvidencePack";
 
 type Row = Record<string, any>;
 
@@ -24,12 +25,6 @@ function money(value: any) {
 function dateTime(value: any) {
   if (!value) return "Not recorded";
   return new Date(value).toLocaleString("en-GB");
-}
-
-function countItems(value: any) {
-  if (Array.isArray(value)) return value.length;
-  if (value && typeof value === "object") return Object.keys(value).length;
-  return 0;
 }
 
 export default function SnapshotDetailPage() {
@@ -69,36 +64,22 @@ export default function SnapshotDetailPage() {
     if (clientId && taxYearId && snapshotId) loadSnapshot();
   }, [clientId, taxYearId, snapshotId]);
 
-  const checks = useMemo(() => {
-    if (!snapshot) return [];
-
-    return [
-      { label: "Payload hash preserved", ok: Boolean(snapshot.payload_hash) },
-      { label: "Ledger hash preserved", ok: Boolean(snapshot.ledger_hash) },
-      { label: "Totals hash preserved", ok: Boolean(snapshot.totals_hash) },
-      { label: "HMRC payload preserved", ok: countItems(snapshot.hmrc_payload) > 0 },
-      { label: "HMRC response preserved", ok: countItems(snapshot.hmrc_response) > 0 },
-      { label: "Fraud headers preserved", ok: countItems(snapshot.fraud_headers) > 0 },
-      { label: "Tenant context preserved", ok: countItems(snapshot.tenant_context) > 0 },
-      { label: "Audit context preserved", ok: countItems(snapshot.audit_context) > 0 },
-      { label: "Submitted actor role preserved", ok: Boolean(snapshot.submitted_by_role) },
-      { label: "Digital link metadata present", ok: countItems(snapshot.digital_link_metadata) > 0 },
-      { label: "Transaction snapshot present", ok: countItems(snapshot.transaction_snapshot) > 0 },
-      { label: "Batch snapshot present", ok: countItems(snapshot.batch_snapshot) > 0 },
-    ];
+  const evidencePack = useMemo(() => {
+    if (!snapshot) return null;
+    return buildSnapshotEvidencePack(snapshot);
   }, [snapshot]);
-
-  const failedChecks = checks.filter((c) => !c.ok);
 
   if (loading) {
     return (
       <main style={styles.page}>
-        <EvidenceSection title="Loading">Loading forensic snapshot evidence...</EvidenceSection>
+        <EvidenceSection title="Loading">
+          Loading forensic snapshot evidence...
+        </EvidenceSection>
       </main>
     );
   }
 
-  if (!snapshot) {
+  if (!snapshot || !evidencePack) {
     return (
       <main style={styles.page}>
         <h1 style={styles.title}>Snapshot not found</h1>
@@ -128,14 +109,15 @@ export default function SnapshotDetailPage() {
           <h1 style={styles.title}>Immutable HMRC Snapshot Viewer</h1>
 
           <p style={styles.subtitle}>
-            Snapshot ID: <strong style={styles.monospace}>{snapshot.id}</strong>
+            Snapshot ID:{" "}
+            <strong style={styles.monospace}>{evidencePack.snapshotId}</strong>
           </p>
         </div>
 
         <ImmutableBanner />
       </div>
 
-      {failedChecks.length > 0 && (
+      {evidencePack.warnings.length > 0 && (
         <section style={styles.warningCard}>
           <h2 style={styles.warningTitle}>Evidence Review Warnings</h2>
           <p style={styles.warningText}>
@@ -144,9 +126,9 @@ export default function SnapshotDetailPage() {
           </p>
 
           <div style={styles.pillGrid}>
-            {failedChecks.map((check) => (
+            {evidencePack.warnings.map((check: any) => (
               <EvidenceStatusPill
-                key={check.label}
+                key={check.key}
                 ok={false}
                 label={check.label}
               />
@@ -157,9 +139,9 @@ export default function SnapshotDetailPage() {
 
       <EvidenceSection title="Evidence Integrity Checklist">
         <div style={styles.pillGrid}>
-          {checks.map((check) => (
+          {evidencePack.checks.map((check: any) => (
             <EvidenceStatusPill
-              key={check.label}
+              key={check.key}
               ok={check.ok}
               label={check.label}
             />
@@ -171,30 +153,30 @@ export default function SnapshotDetailPage() {
         <EvidenceSection title="Submission Identity">
           <dl style={styles.dl}>
             <dt>Type</dt>
-            <dd>{snapshot.submission_type}</dd>
+            <dd>{evidencePack.identity.submissionType}</dd>
             <dt>Status</dt>
-            <dd>{snapshot.workflow_status}</dd>
+            <dd>{evidencePack.identity.workflowStatus}</dd>
             <dt>Environment</dt>
-            <dd>{snapshot.environment}</dd>
+            <dd>{evidencePack.identity.environment}</dd>
             <dt>Attempt</dt>
-            <dd>{snapshot.submission_attempt}</dd>
+            <dd>{evidencePack.identity.submissionAttempt}</dd>
             <dt>Source route</dt>
-            <dd>{snapshot.source_route || "Not recorded"}</dd>
+            <dd>{evidencePack.identity.sourceRoute || "Not recorded"}</dd>
             <dt>Source table</dt>
-            <dd>{snapshot.source_table || "Not recorded"}</dd>
+            <dd>{evidencePack.identity.sourceTable || "Not recorded"}</dd>
           </dl>
         </EvidenceSection>
 
         <EvidenceSection title="HMRC References">
           <dl style={styles.dl}>
             <dt>Correlation ID</dt>
-            <dd>{snapshot.hmrc_correlation_id || "Not recorded"}</dd>
+            <dd>{evidencePack.hmrcReferences.correlationId || "Not recorded"}</dd>
             <dt>Submission ID</dt>
-            <dd>{snapshot.hmrc_submission_id || "Not recorded"}</dd>
+            <dd>{evidencePack.hmrcReferences.submissionId || "Not recorded"}</dd>
             <dt>Amendment ID</dt>
-            <dd>{snapshot.hmrc_amendment_id || "Not recorded"}</dd>
+            <dd>{evidencePack.hmrcReferences.amendmentId || "Not recorded"}</dd>
             <dt>Idempotency Key</dt>
-            <dd>{snapshot.idempotency_key}</dd>
+            <dd>{evidencePack.hmrcReferences.idempotencyKey}</dd>
           </dl>
         </EvidenceSection>
 
@@ -202,29 +184,29 @@ export default function SnapshotDetailPage() {
           <dl style={styles.dl}>
             <dt>Submitted by</dt>
             <dd>
-              {snapshot.submitted_by_email ||
-                snapshot.submitted_by ||
+              {evidencePack.actor.submittedByEmail ||
+                evidencePack.actor.submittedBy ||
                 "Not recorded"}
             </dd>
             <dt>Role</dt>
-            <dd>{snapshot.submitted_by_role || "Not recorded"}</dd>
+            <dd>{evidencePack.actor.submittedByRole || "Not recorded"}</dd>
             <dt>Submitted at</dt>
-            <dd>{dateTime(snapshot.submitted_at)}</dd>
+            <dd>{dateTime(evidencePack.actor.submittedAt)}</dd>
             <dt>Locked at</dt>
-            <dd>{dateTime(snapshot.locked_at)}</dd>
+            <dd>{dateTime(evidencePack.actor.lockedAt)}</dd>
           </dl>
         </EvidenceSection>
 
         <EvidenceSection title="Financial Snapshot">
           <dl style={styles.dl}>
             <dt>Income</dt>
-            <dd>{money(snapshot.income_total)}</dd>
+            <dd>{money(evidencePack.financials.incomeTotal)}</dd>
             <dt>Expenses</dt>
-            <dd>{money(snapshot.expense_total)}</dd>
+            <dd>{money(evidencePack.financials.expenseTotal)}</dd>
             <dt>Profit</dt>
-            <dd>{money(snapshot.profit_total)}</dd>
+            <dd>{money(evidencePack.financials.profitTotal)}</dd>
             <dt>Transactions</dt>
-            <dd>{snapshot.transaction_count}</dd>
+            <dd>{evidencePack.financials.transactionCount}</dd>
           </dl>
         </EvidenceSection>
       </section>
@@ -232,44 +214,47 @@ export default function SnapshotDetailPage() {
       <EvidenceSection title="Hash Chain Evidence">
         <HashEvidenceGrid
           items={[
-            { label: "Payload Hash", value: snapshot.payload_hash },
-            { label: "Ledger Hash", value: snapshot.ledger_hash },
-            { label: "Totals Hash", value: snapshot.totals_hash },
-            { label: "Submission Hash", value: snapshot.submission_hash },
+            { label: "Payload Hash", value: evidencePack.hashes.payloadHash },
+            { label: "Ledger Hash", value: evidencePack.hashes.ledgerHash },
+            { label: "Totals Hash", value: evidencePack.hashes.totalsHash },
+            {
+              label: "Submission Hash",
+              value: evidencePack.hashes.submissionHash,
+            },
           ]}
         />
       </EvidenceSection>
 
       <EvidenceSection title="Amendment / Replay Lineage">
         <LineagePanel
-          reason={snapshot.amendment_reason}
+          reason={evidencePack.lineage.amendmentReason}
           items={[
             {
               label: "Amendment Record",
-              value: snapshot.amendment_id,
+              value: evidencePack.lineage.amendmentId,
               fallback: "Not an amendment",
             },
             {
               label: "Original Snapshot",
-              value: snapshot.original_snapshot_id,
-              href: snapshot.original_snapshot_id
-                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.original_snapshot_id}`
+              value: evidencePack.lineage.originalSnapshotId,
+              href: evidencePack.lineage.originalSnapshotId
+                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${evidencePack.lineage.originalSnapshotId}`
                 : undefined,
               fallback: "Not recorded",
             },
             {
               label: "Previous Snapshot",
-              value: snapshot.previous_snapshot_id,
-              href: snapshot.previous_snapshot_id
-                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.previous_snapshot_id}`
+              value: evidencePack.lineage.previousSnapshotId,
+              href: evidencePack.lineage.previousSnapshotId
+                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${evidencePack.lineage.previousSnapshotId}`
                 : undefined,
               fallback: "Not recorded",
             },
             {
               label: "Replay Of",
-              value: snapshot.replay_of_snapshot_id,
-              href: snapshot.replay_of_snapshot_id
-                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.replay_of_snapshot_id}`
+              value: evidencePack.lineage.replayOfSnapshotId,
+              href: evidencePack.lineage.replayOfSnapshotId
+                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${evidencePack.lineage.replayOfSnapshotId}`
                 : undefined,
               fallback: "Not replayed",
             },
@@ -277,19 +262,63 @@ export default function SnapshotDetailPage() {
         />
       </EvidenceSection>
 
-      <JsonEvidenceCard title="Original Totals" value={snapshot.original_totals} />
-      <JsonEvidenceCard title="Adjustment Totals" value={snapshot.adjustment_totals} />
-      <JsonEvidenceCard title="Submitted Totals" value={snapshot.submitted_totals} />
-      <JsonEvidenceCard title="Immutable HMRC Payload" value={snapshot.hmrc_payload} />
-      <JsonEvidenceCard title="Immutable HMRC Response" value={snapshot.hmrc_response} />
-      <JsonEvidenceCard title="Fraud Prevention Headers" value={snapshot.fraud_headers} />
-      <JsonEvidenceCard title="OAuth Context" value={snapshot.oauth_context} />
-      <JsonEvidenceCard title="Tenant Context" value={snapshot.tenant_context} />
-      <JsonEvidenceCard title="Audit Context" value={snapshot.audit_context} />
-      <JsonEvidenceCard title="Transaction Snapshot" value={snapshot.transaction_snapshot} />
-      <JsonEvidenceCard title="Source Totals Snapshot" value={snapshot.source_totals_snapshot} />
-      <JsonEvidenceCard title="Batch Snapshot" value={snapshot.batch_snapshot} />
-      <JsonEvidenceCard title="Digital Link Metadata" value={snapshot.digital_link_metadata} />
+      <JsonEvidenceCard
+        title="Canonical Evidence Pack"
+        value={evidencePack}
+        defaultOpen={false}
+      />
+      <JsonEvidenceCard
+        title="Original Totals"
+        value={evidencePack.financials.originalTotals}
+      />
+      <JsonEvidenceCard
+        title="Adjustment Totals"
+        value={evidencePack.financials.adjustmentTotals}
+      />
+      <JsonEvidenceCard
+        title="Submitted Totals"
+        value={evidencePack.financials.submittedTotals}
+      />
+      <JsonEvidenceCard
+        title="Immutable HMRC Payload"
+        value={evidencePack.rawEvidence.hmrcPayload}
+      />
+      <JsonEvidenceCard
+        title="Immutable HMRC Response"
+        value={evidencePack.rawEvidence.hmrcResponse}
+      />
+      <JsonEvidenceCard
+        title="Fraud Prevention Headers"
+        value={evidencePack.rawEvidence.fraudHeaders}
+      />
+      <JsonEvidenceCard
+        title="OAuth Context"
+        value={evidencePack.rawEvidence.oauthContext}
+      />
+      <JsonEvidenceCard
+        title="Tenant Context"
+        value={evidencePack.rawEvidence.tenantContext}
+      />
+      <JsonEvidenceCard
+        title="Audit Context"
+        value={evidencePack.rawEvidence.auditContext}
+      />
+      <JsonEvidenceCard
+        title="Transaction Snapshot"
+        value={evidencePack.rawEvidence.transactionSnapshot}
+      />
+      <JsonEvidenceCard
+        title="Source Totals Snapshot"
+        value={evidencePack.rawEvidence.sourceTotalsSnapshot}
+      />
+      <JsonEvidenceCard
+        title="Batch Snapshot"
+        value={evidencePack.rawEvidence.batchSnapshot}
+      />
+      <JsonEvidenceCard
+        title="Digital Link Metadata"
+        value={evidencePack.rawEvidence.digitalLinkMetadata}
+      />
     </main>
   );
 }
