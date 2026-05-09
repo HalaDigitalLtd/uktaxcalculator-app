@@ -7,6 +7,7 @@ import { buildFraudHeaders } from "../../../../lib/hmrc/fraudHeaders";
 import {
   buildSelfEmploymentPayload,
   buildUKPropertyPayload,
+  buildForeignPropertyPayload,
 } from "../../../../lib/hmrc/payloads";
 import { logHMRCSubmission } from "../../../../lib/hmrc/submissionLogger";
 import {
@@ -15,24 +16,49 @@ import {
 } from "../../../../lib/hmrc/tenantSecurity";
 import { getQuarterLedgerSnapshot } from "../../../../lib/quarterLedger";
 
+type SourceType = "self_employment" | "uk_property" | "foreign_property";
+
 function normalise(value: any) {
   return String(value || "").toLowerCase().trim();
 }
 
-function normaliseBusinessType(source: any, obligation: any) {
-  const raw = String(
-    source?.hmrc_source ||
-      obligation?.type_of_business ||
-      obligation?.typeOfBusiness ||
-      obligation?.business_type ||
-      obligation?.hmrc_source ||
-      obligation?.source ||
-      obligation?.hmrc_response?.typeOfBusiness ||
-      ""
-  ).toLowerCase();
+function canonicalSourceType(value: any): SourceType | null {
+  const raw = normalise(value).replaceAll("-", "_").replaceAll(" ", "_");
 
-  if (raw.includes("property")) return "uk-property";
-  return "self-employment";
+  if (raw.includes("foreign") && raw.includes("property")) {
+    return "foreign_property";
+  }
+
+  if (raw.includes("uk") && raw.includes("property")) {
+    return "uk_property";
+  }
+
+  if (raw.includes("property")) {
+    return "uk_property";
+  }
+
+  if (raw.includes("self") || raw.includes("employment")) {
+    return "self_employment";
+  }
+
+  return null;
+}
+
+function resolveSourceType(source: any, sourceRecord: any, obligation: any) {
+  return (
+    canonicalSourceType(sourceRecord?.canonical_source_type) ||
+    canonicalSourceType(sourceRecord?.hmrc_source) ||
+    canonicalSourceType(source?.canonicalSourceType) ||
+    canonicalSourceType(source?.hmrcSource) ||
+    canonicalSourceType(obligation?.canonical_source_type) ||
+    canonicalSourceType(obligation?.hmrc_business_type) ||
+    canonicalSourceType(obligation?.type_of_business) ||
+    canonicalSourceType(obligation?.typeOfBusiness) ||
+    canonicalSourceType(obligation?.business_type) ||
+    canonicalSourceType(obligation?.hmrc_source) ||
+    canonicalSourceType(obligation?.source) ||
+    canonicalSourceType(obligation?.hmrc_response?.typeOfBusiness)
+  );
 }
 
 function taxYearCode(label: string) {
@@ -41,21 +67,53 @@ function taxYearCode(label: string) {
   return String(label || "");
 }
 
+function hmrcBusinessType(sourceType: SourceType) {
+  if (sourceType === "self_employment") return "self-employment";
+  if (sourceType === "uk_property") return "uk-property";
+  return "foreign-property";
+}
+
 function buildEndpoint(params: {
-  businessType: string;
+  sourceType: SourceType;
   nino: string;
   businessId: string;
   taxYearLabel: string;
 }) {
-  const { businessType, nino, businessId, taxYearLabel } = params;
+  const { sourceType, nino, businessId, taxYearLabel } = params;
+  const year = taxYearCode(taxYearLabel);
 
-  if (businessType === "uk-property") {
-    return `/individuals/business/property/${nino}/${businessId}/period/${taxYearCode(
-      taxYearLabel
-    )}`;
+  if (sourceType === "uk_property") {
+    return `/individuals/business/property/uk/${nino}/${businessId}/period/${year}`;
+  }
+
+  if (sourceType === "foreign_property") {
+    return `/individuals/business/property/foreign/${nino}/${businessId}/period/${year}`;
   }
 
   return `/individuals/business/self-employment/${nino}/${businessId}/period`;
+}
+
+function buildPayload(params: {
+  sourceType: SourceType;
+  totals: {
+    income: number;
+    expenses: number;
+    netProfit: number;
+  };
+  periodStart: string;
+  periodEnd: string;
+}) {
+  const { sourceType, totals, periodStart, periodEnd } = params;
+
+  if (sourceType === "uk_property") {
+    return buildUKPropertyPayload(totals, periodStart, periodEnd);
+  }
+
+  if (sourceType === "foreign_property") {
+    return buildForeignPropertyPayload(totals, periodStart, periodEnd);
+  }
+
+  return buildSelfEmploymentPayload(totals, periodStart, periodEnd);
 }
 
 function extractErrorCode(data: any) {
@@ -84,6 +142,7 @@ export async function POST(req: NextRequest) {
     const user = await getAuthenticatedUserFromRequest(req);
 
     let body: any = {};
+
     try {
       const requestText = await req.text();
       body = requestText ? JSON.parse(requestText) : {};
@@ -138,9 +197,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const sourceRows = ledger.sourceTotals;
-
-    if (!sourceRows.length) {
+    if (!ledger.sourceTotals.length) {
       return NextResponse.json(
         {
           success: false,
@@ -151,30 +208,67 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const unpreparedSources = ledger.sources.filter(
-      (source: any) =>
-        ![
-          "prepared",
-          "ready_to_submit",
-          "submitted",
-          "accepted",
-          "finalised",
-        ].includes(normalise(source.status))
+    const sourceRecordsById = new Map(
+      (ledger.sources || []).map((source: any) => [String(source.id), source])
     );
+
+    const sourcesWithTransactions = ledger.sourceTotals.filter(
+      (source: any) => Number(source.transactionCount || 0) > 0
+    );
+
+    if (!sourcesWithTransactions.length) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "No source-level transactions found. At least one HMRC income source must have ledger transactions.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const unverifiedSources = sourcesWithTransactions.filter((source: any) => {
+      const sourceRecord = sourceRecordsById.get(String(source.sourceRowId));
+      return sourceRecord?.source_evidence_status !== "verified";
+    });
+
+    if (unverifiedSources.length > 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "All submitted income sources must be HMRC verified before quarterly submission.",
+          unverifiedCount: unverifiedSources.length,
+        },
+        { status: 400 }
+      );
+    }
+
+    const unpreparedSources = sourcesWithTransactions.filter((source: any) => {
+      const sourceRecord = sourceRecordsById.get(String(source.sourceRowId));
+
+      return ![
+        "prepared",
+        "ready_to_submit",
+        "submitted",
+        "accepted",
+        "finalised",
+      ].includes(normalise(sourceRecord?.status || source.status));
+    });
 
     if (unpreparedSources.length > 0 && !isRetry && !isAmendment) {
       return NextResponse.json(
         {
           success: false,
           error:
-            "All income source rows must be prepared before quarterly HMRC submission.",
+            "All submitted income source rows must be prepared before quarterly HMRC submission.",
           unpreparedCount: unpreparedSources.length,
         },
         { status: 400 }
       );
     }
 
-    const sourceObligationIds = sourceRows
+    const sourceObligationIds = sourcesWithTransactions
       .map((row: any) => row.obligationId)
       .filter(Boolean);
 
@@ -233,15 +327,20 @@ export async function POST(req: NextRequest) {
     const hmrcResults: any[] = [];
     const taxYearLabel = taxYear.year_label || taxYear.label || "";
 
-    for (const source of sourceRows) {
+    for (const source of sourcesWithTransactions) {
+      const sourceRecord = sourceRecordsById.get(String(source.sourceRowId));
+
       const obligation =
         source.obligationId && obligationsById.has(String(source.obligationId))
           ? obligationsById.get(String(source.obligationId))
           : null;
 
-      const businessType = normaliseBusinessType(source, obligation);
+      const sourceType = resolveSourceType(source, sourceRecord, obligation);
+      const businessType = sourceType ? hmrcBusinessType(sourceType) : null;
+
       const businessId =
         source.hmrcBusinessId ||
+        sourceRecord?.hmrc_business_id ||
         obligation?.business_id ||
         obligation?.businessId ||
         obligation?.hmrc_business_id ||
@@ -251,6 +350,7 @@ export async function POST(req: NextRequest) {
 
       const periodStart =
         source.periodStart ||
+        sourceRecord?.period_start ||
         obligation?.period_start_date ||
         obligation?.periodStartDate ||
         obligation?.start_date ||
@@ -261,6 +361,7 @@ export async function POST(req: NextRequest) {
 
       const periodEnd =
         source.periodEnd ||
+        sourceRecord?.period_end ||
         obligation?.period_end_date ||
         obligation?.periodEndDate ||
         obligation?.end_date ||
@@ -268,6 +369,29 @@ export async function POST(req: NextRequest) {
         quarter.period_end ||
         quarter.end_date ||
         null;
+
+      if (!sourceType || !businessType) {
+        hmrcResults.push({
+          success: false,
+          skipped: false,
+          sourceRowId: source.sourceRowId,
+          obligationId: source.obligationId,
+          businessType: null,
+          businessId,
+          periodStart,
+          periodEnd,
+          statusCode: 0,
+          correlationId: null,
+          hmrcSubmissionId: null,
+          errorCode: "LOCAL_SOURCE_TYPE_ERROR",
+          errorMessage:
+            "Unsupported or missing HMRC source type. Expected self_employment, uk_property or foreign_property.",
+          endpoint: null,
+          payload: null,
+          response: null,
+        });
+        continue;
+      }
 
       const key = `${businessType}__${source.obligationId}`;
 
@@ -278,6 +402,7 @@ export async function POST(req: NextRequest) {
           sourceRowId: source.sourceRowId,
           obligationId: source.obligationId,
           businessType,
+          sourceType,
           businessId,
           periodStart,
           periodEnd,
@@ -304,6 +429,7 @@ export async function POST(req: NextRequest) {
           sourceRowId: source.sourceRowId,
           obligationId: source.obligationId,
           businessType,
+          sourceType,
           businessId,
           periodStart,
           periodEnd,
@@ -321,22 +447,24 @@ export async function POST(req: NextRequest) {
       }
 
       const endpoint = buildEndpoint({
-        businessType,
+        sourceType,
         nino,
         businessId,
         taxYearLabel,
       });
 
       const sourceTotals = {
-        income: source.income,
-        expenses: source.expenses,
-        netProfit: source.profit,
+        income: Number(source.income || 0),
+        expenses: Number(source.expenses || 0),
+        netProfit: Number(source.profit || 0),
       };
 
-      const hmrcPayload =
-        businessType === "uk-property"
-          ? buildUKPropertyPayload(sourceTotals, periodStart, periodEnd)
-          : buildSelfEmploymentPayload(sourceTotals, periodStart, periodEnd);
+      const hmrcPayload = buildPayload({
+        sourceType,
+        totals: sourceTotals,
+        periodStart,
+        periodEnd,
+      });
 
       const hmrcResponse = await hmrcRequest({
         accessToken,
@@ -350,6 +478,7 @@ export async function POST(req: NextRequest) {
 
       const hmrcSubmissionId =
         hmrcResponse.data?.submissionId ||
+        hmrcResponse.data?.periodId ||
         hmrcResponse.data?.id ||
         hmrcResponse.data?.receiptId ||
         null;
@@ -362,6 +491,7 @@ export async function POST(req: NextRequest) {
         skipped: false,
         sourceRowId: source.sourceRowId,
         obligationId: source.obligationId,
+        sourceType,
         businessType,
         businessId,
         periodStart,
@@ -375,6 +505,11 @@ export async function POST(req: NextRequest) {
         errorMessage,
         response: hmrcResponse.data,
         sourceTotals,
+        sourceEvidence: {
+          hmrcIncomeSourceId: sourceRecord?.hmrc_income_source_id || null,
+          evidenceStatus: sourceRecord?.source_evidence_status || null,
+          sourceEvidenceSnapshot: sourceRecord?.source_evidence_snapshot || {},
+        },
       };
 
       hmrcResults.push(result);
@@ -407,7 +542,6 @@ export async function POST(req: NextRequest) {
     const allSuccess = hmrcResults.every((r) => r.success);
     const anySuccess = hmrcResults.some((r) => r.success);
     const firstError = hmrcResults.find((r) => !r.success);
-
     const now = new Date().toISOString();
 
     const { data: submissionRecord, error: submissionError } =
@@ -439,19 +573,22 @@ export async function POST(req: NextRequest) {
             hmrcResults.map((r) => r.correlationId).filter(Boolean).join(", ") ||
             null,
           hmrc_submission_id:
-            hmrcResults.map((r) => r.hmrcSubmissionId).filter(Boolean).join(", ") ||
-            null,
+            hmrcResults
+              .map((r) => r.hmrcSubmissionId)
+              .filter(Boolean)
+              .join(", ") || null,
           hmrc_error_code:
             hmrcResults.find((r) => r.errorCode)?.errorCode || null,
           hmrc_error_message:
             hmrcResults.find((r) => r.errorMessage)?.errorMessage || null,
           hmrc_endpoint: retryFailedOnly
-            ? "RETRY_FAILED_ONLY_CANONICAL_LEDGER_SUBMISSION"
-            : "CANONICAL_LEDGER_MULTIPLE_SOURCE_SUBMISSION",
+            ? "RETRY_FAILED_ONLY_SOURCE_AWARE_QUARTER_SUBMISSION"
+            : "SOURCE_AWARE_QUARTER_SUBMISSION",
           hmrc_method: "POST",
           hmrc_request_payload: hmrcResults.map((r) => ({
             sourceRowId: r.sourceRowId,
             obligationId: r.obligationId,
+            sourceType: r.sourceType,
             businessType: r.businessType,
             businessId: r.businessId,
             periodStart: r.periodStart,
@@ -464,6 +601,7 @@ export async function POST(req: NextRequest) {
           is_amendment: isAmendment,
           payload: {
             source: "quarter_transactions",
+            sourceModel: "quarter_income_sources",
             quarter,
             client: {
               id: client.id,
@@ -473,6 +611,7 @@ export async function POST(req: NextRequest) {
             },
             totals: ledger.totals,
             sourceTotals: ledger.sourceTotals,
+            submittedSources: sourcesWithTransactions,
             batches: ledger.batches,
             transactions: ledger.transactions,
             retryFailedOnly,
@@ -488,71 +627,81 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
-const snapshotRecord = await createHmrcSubmissionSnapshot({
-  firmId: client.firm_id,
-  clientId: client.id,
-  taxYearId: taxYear.id,
-  quarterId,
-  submissionType: "quarterly_update",
-  workflowStatus: allSuccess
-    ? "submitted"
-    : anySuccess
-      ? "partially_submitted"
-      : "failed",
-  sourceRoute: "/api/hmrc/submit-quarter",
-  sourceTable: "submissions",
-  sourceRecordId: submissionRecord.id,
 
-  hmrcPayload: {
-    requests: hmrcResults.map((r) => ({
-      sourceRowId: r.sourceRowId,
-      obligationId: r.obligationId,
-      businessType: r.businessType,
-      businessId: r.businessId,
-      periodStart: r.periodStart,
-      periodEnd: r.periodEnd,
-      endpoint: r.endpoint,
-      skipped: r.skipped || false,
-      payload: r.payload,
-    })),
-  },
-  hmrcResponse: hmrcResults,
-  fraudHeaders,
+    const snapshotRecord = await createHmrcSubmissionSnapshot({
+      firmId: client.firm_id,
+      clientId: client.id,
+      taxYearId: taxYear.id,
+      quarterId,
+      submissionType: "quarterly_update",
+      workflowStatus: allSuccess
+        ? "submitted"
+        : anySuccess
+          ? "partially_submitted"
+          : "failed",
+      sourceRoute: "/api/hmrc/submit-quarter",
+      sourceTable: "submissions",
+      sourceRecordId: submissionRecord.id,
 
-  submittedTotals: ledger.totals,
-  ledgerSnapshot: {
-    quarter,
-    totals: ledger.totals,
-    sourceTotals: ledger.sourceTotals,
-  },
-  transactionSnapshot: ledger.transactions,
-  sourceTotalsSnapshot: ledger.sourceTotals,
-  batchSnapshot: ledger.batches,
+      hmrcPayload: {
+        requests: hmrcResults.map((r) => ({
+          sourceRowId: r.sourceRowId,
+          obligationId: r.obligationId,
+          sourceType: r.sourceType,
+          businessType: r.businessType,
+          businessId: r.businessId,
+          periodStart: r.periodStart,
+          periodEnd: r.periodEnd,
+          endpoint: r.endpoint,
+          skipped: r.skipped || false,
+          payload: r.payload,
+        })),
+      },
+      hmrcResponse: hmrcResults,
+      fraudHeaders,
 
-  hmrcCorrelationId:
-    hmrcResults.map((r) => r.correlationId).filter(Boolean).join(", ") || null,
-  hmrcSubmissionId:
-    hmrcResults.map((r) => r.hmrcSubmissionId).filter(Boolean).join(", ") || null,
+      submittedTotals: ledger.totals,
+      ledgerSnapshot: {
+        quarter,
+        totals: ledger.totals,
+        sourceTotals: ledger.sourceTotals,
+        submittedSources: sourcesWithTransactions,
+      },
+      transactionSnapshot: ledger.transactions,
+      sourceTotalsSnapshot: ledger.sourceTotals,
+      batchSnapshot: ledger.batches,
 
-  submissionAttempt: (previousLogs?.length || 0) + 1,
-  submittedBy: user.id,
-  submittedByEmail: user.email || null,
-  submittedByRole: null,
+      hmrcCorrelationId:
+        hmrcResults.map((r) => r.correlationId).filter(Boolean).join(", ") ||
+        null,
+      hmrcSubmissionId:
+        hmrcResults
+          .map((r) => r.hmrcSubmissionId)
+          .filter(Boolean)
+          .join(", ") || null,
 
-  tenantContext: {
-    firmId: client.firm_id,
-    clientId: client.id,
-    taxYearId: taxYear.id,
-    quarterId,
-  },
-  auditContext: {
-    source: "canonical_quarter_ledger",
-    immutableSnapshot: true,
-    digitalLinkSource: "quarter_transactions",
-    transactionCount: ledger.totals.transactionCount,
-    batchCount: ledger.batches.length,
-  },
-});
+      submissionAttempt: (previousLogs?.length || 0) + 1,
+      submittedBy: user.id,
+      submittedByEmail: user.email || null,
+      submittedByRole: null,
+
+      tenantContext: {
+        firmId: client.firm_id,
+        clientId: client.id,
+        taxYearId: taxYear.id,
+        quarterId,
+      },
+      auditContext: {
+        source: "source_aware_quarter_ledger",
+        immutableSnapshot: true,
+        digitalLinkSource: "quarter_transactions",
+        sourceModel: "quarter_income_sources",
+        transactionCount: ledger.totals.transactionCount,
+        batchCount: ledger.batches.length,
+        submittedSourceCount: sourcesWithTransactions.length,
+      },
+    });
+
     await supabaseAdmin
       .from("hmrc_submission_logs")
       .update({ submission_id: submissionRecord.id })
@@ -572,6 +721,7 @@ const snapshotRecord = await createHmrcSubmissionSnapshot({
             : anySuccess
               ? "partially_submitted"
               : "submission_failed",
+          locked: result.success ? true : false,
           submitted_at: result.success ? now : null,
           hmrc_submission_id: result.hmrcSubmissionId || null,
           hmrc_correlation_id: result.correlationId || null,
@@ -584,11 +734,13 @@ const snapshotRecord = await createHmrcSubmissionSnapshot({
             snapshotId: snapshotRecord.id,
             sourceRowId: result.sourceRowId,
             obligationId: result.obligationId,
+            sourceType: result.sourceType,
             businessType: result.businessType,
             businessId: result.businessId,
             periodStart: result.periodStart,
             periodEnd: result.periodEnd,
             sourceTotals: result.sourceTotals,
+            sourceEvidence: result.sourceEvidence,
             hmrcSubmissionId: result.hmrcSubmissionId,
             correlationId: result.correlationId,
             submittedAt: now,
@@ -626,22 +778,24 @@ const snapshotRecord = await createHmrcSubmissionSnapshot({
       partial_success: anySuccess && !allSuccess,
       mode: "real_hmrc_api",
       source: "quarter_transactions",
+      sourceModel: "quarter_income_sources",
       retryFailedOnly,
       message: allSuccess
         ? retryFailedOnly
-          ? "Retry completed. All income sources are now submitted or already successful."
-          : "Quarter submitted successfully to HMRC from canonical digital ledger."
+          ? "Retry completed. All submitted income sources are now submitted or already successful."
+          : "Quarter submitted successfully to HMRC from source-aware canonical digital ledger."
         : anySuccess
           ? retryFailedOnly
-            ? "Retry completed. Some income sources still failed."
-            : "Quarter partially submitted to HMRC. Some income sources failed."
+            ? "Retry completed. Some submitted income sources still failed."
+            : "Quarter partially submitted to HMRC. Some submitted income sources failed."
           : "HMRC submission failed.",
       submissionId: submissionRecord.id,
       firmId: client.firm_id,
       clientId: client.id,
       taxYearId: taxYear.id,
       quarterId,
-      sourceCount: sourceRows.length,
+      sourceCount: ledger.sourceTotals.length,
+      submittedSourceCount: sourcesWithTransactions.length,
       attemptedCount: actualAttempts.length,
       skippedCount: hmrcResults.filter((r) => r.skipped).length,
       totalIncome: ledger.totals.income,

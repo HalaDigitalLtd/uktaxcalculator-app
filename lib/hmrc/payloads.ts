@@ -40,16 +40,42 @@ export function buildUKPropertyPayload(
     toDate: periodEnd,
     ukNonFhlProperty: {
       income: {
-        rentIncome: {
-          rentAmount: money(totals.income),
-        },
+        periodAmount: money(totals.income),
         premiumsOfLeaseGrant: 0,
         reversePremiums: 0,
-        otherPropertyIncome: 0,
+        taxDeducted: 0,
+        otherIncome: 0,
       },
       expenses: {
         consolidatedExpenses: money(totals.expenses),
       },
     },
+  };
+}
+
+export function buildForeignPropertyPayload(
+  totals: QuarterTotals,
+  periodStart: string,
+  periodEnd: string
+) {
+  return {
+    fromDate: periodStart,
+    toDate: periodEnd,
+    foreignProperty: [
+      {
+        countryCode: "AE",
+        income: {
+          rentIncome: money(totals.income),
+          foreignTaxCreditRelief: false,
+          premiumsOfLeaseGrant: 0,
+          otherPropertyIncome: 0,
+          foreignTaxPaidOrDeducted: 0,
+          specialWithholdingTaxOrUkTaxPaid: 0,
+        },
+        expenses: {
+          consolidatedExpenses: money(totals.expenses),
+        },
+      },
+    ],
   };
 }
