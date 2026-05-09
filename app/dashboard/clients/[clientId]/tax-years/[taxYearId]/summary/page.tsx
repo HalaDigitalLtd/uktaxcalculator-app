@@ -18,6 +18,18 @@ const ACTIVE_AMENDMENT_STATUSES = [
   "unlocked",
 ];
 
+const PREPARED_SOURCE_STATUSES = [
+  "prepared",
+  "submitted",
+  "finalised",
+  "accepted",
+  "ready_to_submit",
+  "submission_failed",
+  "partially_submitted",
+];
+
+const SUBMITTED_SOURCE_STATUSES = ["submitted", "accepted", "finalised"];
+
 function normalise(value: any) {
   return String(value || "").toLowerCase().trim();
 }
@@ -43,6 +55,7 @@ function amount(row: Row | null, keys: string[]) {
 
 function formatDate(value: any) {
   if (!value) return "-";
+
   try {
     return new Date(value).toLocaleString("en-GB");
   } catch {
@@ -53,6 +66,26 @@ function formatDate(value: any) {
 function sourceLabel(value: any) {
   const clean = String(value || "unknown").replaceAll("-", " ");
   return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function dueStatusLabel(value: any) {
+  const clean = normalise(value).replaceAll("_", " ");
+  if (!clean || clean === "not assessed") return "Not assessed";
+  return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function sourceIsPrepared(row: Row) {
+  return PREPARED_SOURCE_STATUSES.includes(normalise(row.status));
+}
+
+function sourceIsSubmitted(row: Row) {
+  return SUBMITTED_SOURCE_STATUSES.includes(normalise(row.status));
+}
+
+function sourceNeedsRetry(row: Row) {
+  return ["submission_failed", "partially_submitted"].includes(
+    normalise(row.status)
+  );
 }
 
 export default function TaxYearSummaryPage() {
@@ -70,11 +103,24 @@ export default function TaxYearSummaryPage() {
   const [amendments, setAmendments] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingAmendment, setCreatingAmendment] = useState(false);
+  const [submittingQuarterId, setSubmittingQuarterId] = useState("");
   const [message, setMessage] = useState("");
   const [newAmendmentReason, setNewAmendmentReason] = useState("");
 
+  function dueBadgeStyle(status: any) {
+    const clean = normalise(status);
+
+    if (clean === "submitted") return styles.successBadge;
+    if (clean === "overdue") return styles.overdueBadge;
+    if (clean === "due_soon") return styles.dueSoonBadge;
+    if (clean === "not_due") return styles.notDueBadge;
+
+    return styles.badge;
+  }
+
   const clientName = useMemo(() => {
     if (!client) return "Client";
+
     return (
       `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
       client.name ||
@@ -253,15 +299,7 @@ export default function TaxYearSummaryPage() {
   }, [quarters, quarterIncomeSources]);
 
   const preparedSourceRows = useMemo(() => {
-    return quarterIncomeSources.filter((row) =>
-      [
-        "prepared",
-        "submitted",
-        "finalised",
-        "accepted",
-        "ready_to_submit",
-      ].includes(normalise(row.status))
-    ).length;
+    return quarterIncomeSources.filter(sourceIsPrepared).length;
   }, [quarterIncomeSources]);
 
   const preparedQuarters = useMemo(() => {
@@ -269,26 +307,26 @@ export default function TaxYearSummaryPage() {
       const sourceRows = sourceRowsByQuarter[q.id] || [];
 
       if (sourceRows.length > 0) {
-        return sourceRows.every((row) =>
-          [
-            "prepared",
-            "submitted",
-            "finalised",
-            "accepted",
-            "ready_to_submit",
-          ].includes(normalise(row.status))
-        );
+        return sourceRows.every(sourceIsPrepared);
       }
 
-      return [
-        "prepared",
-        "submitted",
-        "finalised",
-        "accepted",
-        "ready_to_submit",
-      ].includes(normalise(q.status));
+      return PREPARED_SOURCE_STATUSES.includes(normalise(q.status));
     }).length;
   }, [quarters, sourceRowsByQuarter]);
+
+  const overdueSourceRows = useMemo(() => {
+    return quarterIncomeSources.filter(
+      (row) => normalise(row.submission_due_status) === "overdue"
+    ).length;
+  }, [quarterIncomeSources]);
+
+  const failedSourceRows = useMemo(() => {
+    return quarterIncomeSources.filter(sourceNeedsRetry).length;
+  }, [quarterIncomeSources]);
+
+  const submittedSourceRows = useMemo(() => {
+    return quarterIncomeSources.filter(sourceIsSubmitted).length;
+  }, [quarterIncomeSources]);
 
   const allQuartersPrepared =
     quarters.length > 0 && preparedQuarters === quarters.length;
@@ -360,6 +398,55 @@ export default function TaxYearSummaryPage() {
     ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/amendments/${activeAmendment.id}`
     : "";
 
+  async function submitQuarter(q: Row, hasFailedSource: boolean) {
+    const confirmed = window.confirm(
+      hasFailedSource
+        ? `Retry failed HMRC source(s) for ${q.quarter_name}?`
+        : `Submit ${q.quarter_name} to HMRC?`
+    );
+
+    if (!confirmed) return;
+
+    setSubmittingQuarterId(q.id);
+
+    try {
+      setMessage(
+        hasFailedSource
+          ? `Retrying ${q.quarter_name} failed HMRC source(s)...`
+          : `Submitting ${q.quarter_name} to HMRC...`
+      );
+
+      const session = await supabase.auth.getSession();
+      const token = session.data.session?.access_token;
+
+      const response = await fetch("/api/hmrc/submit-quarter", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          quarterId: q.id,
+          retry_failed_only: hasFailedSource,
+          is_retry: hasFailedSource,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || (!data.success && !data.partial_success)) {
+        throw new Error(data.error || data.message || "HMRC submission failed");
+      }
+
+      setMessage(data.message || `${q.quarter_name} HMRC workflow completed.`);
+      await loadData();
+    } catch (e: any) {
+      setMessage(e.message || "Quarter submission failed.");
+    }
+
+    setSubmittingQuarterId("");
+  }
+
   async function createAmendment() {
     setMessage("");
 
@@ -393,7 +480,6 @@ export default function TaxYearSummaryPage() {
 
     try {
       const { data: userData } = await supabase.auth.getUser();
-
       const nextNumber = latestAmendmentNumber + 1;
 
       const insertPayload: Row = {
@@ -403,22 +489,17 @@ export default function TaxYearSummaryPage() {
         amendment_number: nextNumber,
         status: "draft",
         reason: newAmendmentReason.trim(),
-
         annual_income_snapshot: totals.income,
         annual_expenses_snapshot: totals.expenses,
         annual_profit_snapshot: totals.profit,
-
         locked_original_income: totals.income,
         locked_original_expenses: totals.expenses,
         locked_original_profit: totals.profit,
-
         original_hmrc_submission_id: hmrcSubmissionId,
         original_hmrc_correlation_id: hmrcCorrelationId,
         original_submitted_at: hmrcSubmittedAt,
-
         created_by: userData.user?.id || null,
         created_by_email: userData.user?.email || null,
-
         meta: {
           source: "tax_year_control_centre",
           amendment_lineage: {
@@ -489,7 +570,7 @@ export default function TaxYearSummaryPage() {
     <main style={styles.page}>
       <div style={styles.header}>
         <div>
-          <Link href={`/app/clients/${clientId}`} style={styles.backLink}>
+          <Link href={`/dashboard/clients/${clientId}`} style={styles.backLink}>
             ← Back to client
           </Link>
 
@@ -595,6 +676,34 @@ export default function TaxYearSummaryPage() {
         </div>
       </section>
 
+      <section style={styles.statsGrid}>
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>HMRC submitted sources</span>
+          <strong style={styles.passValue}>
+            {submittedSourceRows}/{quarterIncomeSources.length}
+          </strong>
+        </div>
+
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>Overdue source updates</span>
+          <strong style={overdueSourceRows > 0 ? styles.failValue : styles.statValue}>
+            {overdueSourceRows}
+          </strong>
+        </div>
+
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>Retry required</span>
+          <strong style={failedSourceRows > 0 ? styles.failValue : styles.statValue}>
+            {failedSourceRows}
+          </strong>
+        </div>
+
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>Immutable snapshots</span>
+          <strong style={styles.statValue}>{submissionSnapshots.length}</strong>
+        </div>
+      </section>
+
       <section style={styles.card}>
         <h2 style={styles.sectionTitle}>HMRC Source Model</h2>
 
@@ -616,9 +725,10 @@ export default function TaxYearSummaryPage() {
         </div>
 
         <p style={styles.sourceNote}>
-          Quarters are reporting-period shells. HMRC obligations and figures are
-          tracked per income source, because one quarter may contain multiple
-          sources such as self-employment, UK property or foreign property.
+          Quarterly updates are tracked per HMRC income source. Final Declaration
+          remains client and tax-year level. Digital records and evidence are
+          preserved through source-level ledger rows, HMRC receipts, correlation IDs
+          and immutable snapshots.
         </p>
       </section>
 
@@ -637,10 +747,7 @@ export default function TaxYearSummaryPage() {
             <div>
               <span style={styles.miniLabel}>Review state</span>
               <strong>
-                {String(workflow?.review_state || "Not started").replaceAll(
-                  "_",
-                  " "
-                )}
+                {String(workflow?.review_state || "Not started").replaceAll("_", " ")}
               </strong>
             </div>
 
@@ -710,18 +817,18 @@ export default function TaxYearSummaryPage() {
             </div>
 
             <div style={styles.checkRow}>
-              <span>Accountant approved</span>
-              <strong>{workflow?.approved ? "Yes" : "No"}</strong>
+              <span>Overdue HMRC updates</span>
+              <strong>{overdueSourceRows}</strong>
+            </div>
+
+            <div style={styles.checkRow}>
+              <span>Retry required</span>
+              <strong>{failedSourceRows}</strong>
             </div>
 
             <div style={styles.checkRow}>
               <span>Final declaration locked</span>
               <strong>{taxYearIsImmutable ? "Yes" : "No"}</strong>
-            </div>
-
-            <div style={styles.checkRow}>
-              <span>HMRC final declaration submitted</span>
-              <strong>{submitted ? "Yes" : "No"}</strong>
             </div>
 
             <div style={styles.checkRow}>
@@ -776,8 +883,7 @@ export default function TaxYearSummaryPage() {
               <h3 style={styles.createTitle}>Create new amendment</h3>
               <p style={styles.muted}>
                 This creates a separate amendment workflow with original HMRC
-                submission lineage and frozen original totals. Adjustments will
-                be entered in the amendment working paper ledger.
+                submission lineage and frozen original totals.
               </p>
 
               <label style={styles.label}>
@@ -785,7 +891,7 @@ export default function TaxYearSummaryPage() {
                 <textarea
                   value={newAmendmentReason}
                   onChange={(e) => setNewAmendmentReason(e.target.value)}
-                  placeholder="Explain why this amendment is required. Example: late expense invoice identified after final declaration submission."
+                  placeholder="Explain why this amendment is required."
                   style={styles.textarea}
                   disabled={creatingAmendment}
                 />
@@ -816,26 +922,32 @@ export default function TaxYearSummaryPage() {
                     <th style={styles.th}>Action</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {amendments.map((a) => (
                     <tr key={a.id}>
                       <td style={styles.td}>
                         <strong>#{a.amendment_number || "-"}</strong>
                       </td>
+
                       <td style={styles.td}>
                         <span style={styles.badge}>{a.status || "draft"}</span>
                       </td>
+
                       <td style={styles.td}>{formatDate(a.created_at)}</td>
+
                       <td style={styles.td}>
                         <span style={styles.monospace}>
                           {a.original_hmrc_submission_id || hmrcSubmissionId || "-"}
                         </span>
                       </td>
+
                       <td style={styles.td}>
                         <span style={styles.monospace}>
                           {a.hmrc_submission_id || "Not submitted"}
                         </span>
                       </td>
+
                       <td style={styles.td}>
                         <Link
                           href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/amendments/${a.id}`}
@@ -865,228 +977,226 @@ export default function TaxYearSummaryPage() {
                 <tr>
                   <th style={styles.th}>Quarter</th>
                   <th style={styles.th}>Period</th>
+                  <th style={styles.th}>Due date</th>
+                  <th style={styles.th}>Deadline</th>
                   <th style={styles.th}>Quarter status</th>
                   <th style={styles.th}>Income sources</th>
                   <th style={styles.th}>Income</th>
                   <th style={styles.th}>Expenses</th>
                   <th style={styles.th}>Profit</th>
-                  <th style={styles.th}>HMRC mappings</th>
+                  <th style={styles.th}>HMRC evidence</th>
                   <th style={styles.th}>Action</th>
                 </tr>
               </thead>
 
               <tbody>
-  {quarters.map((q) => {
-    const sourceRows = sourceRowsByQuarter[q.id] || [];
+                {quarters.map((q) => {
+                  const sourceRows = sourceRowsByQuarter[q.id] || [];
 
-    const income =
-      sourceRows.length > 0
-        ? sourceRows.reduce(
-            (sum, row) => sum + amount(row, ["income"]),
-            0
-          )
-        : amount(q, ["income", "turnover", "sales"]);
+                  const income =
+                    sourceRows.length > 0
+                      ? sourceRows.reduce(
+                          (sum, row) => sum + amount(row, ["income"]),
+                          0
+                        )
+                      : amount(q, ["income", "turnover", "sales"]);
 
-    const expenses =
-      sourceRows.length > 0
-        ? sourceRows.reduce(
-            (sum, row) => sum + amount(row, ["expenses"]),
-            0
-          )
-        : amount(q, ["expenses", "allowable_expenses"]);
+                  const expenses =
+                    sourceRows.length > 0
+                      ? sourceRows.reduce(
+                          (sum, row) => sum + amount(row, ["expenses"]),
+                          0
+                        )
+                      : amount(q, ["expenses", "allowable_expenses"]);
 
-    const sourcePrepared =
-      sourceRows.length > 0 &&
-      sourceRows.every((row) =>
-        [
-          "prepared",
-          "submitted",
-          "finalised",
-          "accepted",
-          "ready_to_submit",
-        ].includes(normalise(row.status))
-      );
+                  const sourcePrepared =
+                    sourceRows.length > 0 && sourceRows.every(sourceIsPrepared);
 
-    const sourceSubmitted =
-      sourceRows.length > 0 &&
-      sourceRows.every((row) =>
-        [
-          "submitted",
-          "accepted",
-          "finalised",
-        ].includes(normalise(row.status))
-      );
+                  const sourceSubmitted =
+                    sourceRows.length > 0 && sourceRows.every(sourceIsSubmitted);
 
-    const quarterLocked =
-      sourceRows.length > 0 &&
-      sourceRows.every((row) =>
-        [
-          "submitted",
-          "accepted",
-          "finalised",
-        ].includes(normalise(row.status))
-      );
+                  const hasFailedSource = sourceRows.some(sourceNeedsRetry);
 
-    return (
-      <tr key={q.id}>
-        <td style={styles.td}>
-          <strong>{q.quarter_name || "Quarter"}</strong>
-        </td>
+                  const quarterDueDate =
+                    sourceRows.find((row) => row.due_date)?.due_date || null;
 
-        <td style={styles.td}>
-          {q.start_date || "?"} to {q.end_date || "?"}
-        </td>
+                  const worstDueStatus = sourceRows.some(
+                    (row) => normalise(row.submission_due_status) === "overdue"
+                  )
+                    ? "overdue"
+                    : sourceRows.some(
+                          (row) =>
+                            normalise(row.submission_due_status) === "due_soon"
+                        )
+                      ? "due_soon"
+                      : sourceRows.length > 0 &&
+                          sourceRows.every(
+                            (row) =>
+                              normalise(row.submission_due_status) === "submitted"
+                          )
+                        ? "submitted"
+                        : sourceRows.some(
+                              (row) =>
+                                normalise(row.submission_due_status) === "not_due"
+                            )
+                          ? "not_due"
+                          : "not_assessed";
 
-        <td style={styles.td}>
-          <span
-            style={
-              sourceSubmitted
-                ? styles.successBadge
-                : sourcePrepared
-                  ? styles.preparedBadge
-                  : styles.badge
-            }
-          >
-            {sourceSubmitted
-              ? "submitted"
-              : sourcePrepared
-                ? "prepared"
-                : sourceRows.length > 0
-                  ? "source review"
-                  : q.status || "not_started"}
-          </span>
-        </td>
+                  const quarterStatusLabel = sourceSubmitted
+                    ? "submitted"
+                    : hasFailedSource
+                      ? "retry required"
+                      : sourcePrepared
+                        ? "prepared"
+                        : sourceRows.length > 0
+                          ? "source review"
+                          : q.status || "not_started";
 
-        <td style={styles.td}>
-          {sourceRows.length === 0 ? (
-            <span style={styles.muted}>No source rows</span>
-          ) : (
-            <div style={styles.sourceStack}>
-              {sourceRows.map((row) => (
-                <div key={row.id} style={styles.sourceLine}>
-                  <span style={styles.sourcePill}>
-                    {sourceLabel(row.hmrc_source)}
-                  </span>
+                  const canSubmitQuarter =
+                    !taxYearIsImmutable &&
+                    sourceRows.length > 0 &&
+                    sourcePrepared &&
+                    !sourceSubmitted;
 
-                  <span style={styles.sourceMeta}>
-                    {row.hmrc_business_id || "No business ID"} ·{" "}
-                    {row.status || "not_started"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </td>
+                  return (
+                    <tr key={q.id}>
+                      <td style={styles.td}>
+                        <strong>{q.quarter_name || "Quarter"}</strong>
+                      </td>
 
-        <td style={styles.td}>{toMoney(income)}</td>
+                      <td style={styles.td}>
+                        {q.start_date || "?"} to {q.end_date || "?"}
+                      </td>
 
-        <td style={styles.td}>{toMoney(expenses)}</td>
+                      <td style={styles.td}>{quarterDueDate || "-"}</td>
 
-        <td style={styles.td}>
-          <strong>{toMoney(income - expenses)}</strong>
-        </td>
+                      <td style={styles.td}>
+                        <span style={dueBadgeStyle(worstDueStatus)}>
+                          {dueStatusLabel(worstDueStatus)}
+                        </span>
+                      </td>
 
-        <td style={styles.td}>
-          <strong>{sourceRows.length}</strong>
-        </td>
+                      <td style={styles.td}>
+                        <span
+                          style={
+                            sourceSubmitted
+                              ? styles.successBadge
+                              : hasFailedSource
+                                ? styles.overdueBadge
+                                : sourcePrepared
+                                  ? styles.preparedBadge
+                                  : styles.badge
+                          }
+                        >
+                          {quarterStatusLabel}
+                        </span>
+                      </td>
 
-        <td style={styles.td}>
-          <div
-            style={{
-              display: "flex",
-              gap: "8px",
-              flexWrap: "wrap",
-            }}
-          >
-            {!taxYearIsImmutable && (
-              <Link
-                href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/quarters/${q.id}`}
-                style={styles.smallButton}
-              >
-                Open
-              </Link>
-            )}
+                      <td style={styles.td}>
+                        {sourceRows.length === 0 ? (
+                          <span style={styles.muted}>No source rows</span>
+                        ) : (
+                          <div style={styles.sourceStack}>
+                            {sourceRows.map((row) => (
+                              <div key={row.id} style={styles.sourceLine}>
+                                <span style={styles.sourcePill}>
+                                  {sourceLabel(row.hmrc_source)}
+                                </span>
 
-            {!taxYearIsImmutable &&
-              sourcePrepared &&
-              !sourceSubmitted && (
-                <button
-                  style={styles.submitQuarterButton}
-                  onClick={async () => {
-                    const confirmed = window.confirm(
-                      `Submit ${q.quarter_name} to HMRC?`
-                    );
+                                <span style={styles.sourceMeta}>
+                                  {row.hmrc_business_id || "No business ID"} ·{" "}
+                                  {row.status || "not_started"} · Due{" "}
+                                  {row.due_date || "-"}
+                                </span>
 
-                    if (!confirmed) return;
+                                <span style={dueBadgeStyle(row.submission_due_status)}>
+                                  {dueStatusLabel(row.submission_due_status)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
 
-                    try {
-                      setMessage(
-                        `Submitting ${q.quarter_name} to HMRC...`
-                      );
+                      <td style={styles.td}>{toMoney(income)}</td>
+                      <td style={styles.td}>{toMoney(expenses)}</td>
 
-                      const session = await supabase.auth.getSession();
+                      <td style={styles.td}>
+                        <strong>{toMoney(income - expenses)}</strong>
+                      </td>
 
-                      const token =
-                        session.data.session?.access_token;
+                      <td style={styles.td}>
+                        {sourceRows.length === 0 ? (
+                          "-"
+                        ) : (
+                          <div style={styles.sourceStack}>
+                            {sourceRows.map((row) => (
+                              <div key={row.id} style={styles.sourceLine}>
+                                <span style={styles.monospace}>
+                                  {row.hmrc_submission_id
+                                    ? `Receipt: ${String(
+                                        row.hmrc_submission_id
+                                      ).slice(0, 18)}`
+                                    : "No receipt"}
+                                </span>
 
-                      const response = await fetch(
-                        "/api/hmrc/submit-quarter",
-                        {
-                          method: "POST",
-                          headers: {
-                            "Content-Type": "application/json",
-                            Authorization: `Bearer ${token}`,
-                          },
-                          body: JSON.stringify({
-                            quarterId: q.id,
-                          }),
-                        }
-                      );
+                                <span style={styles.monospace}>
+                                  {row.hmrc_correlation_id
+                                    ? `Corr: ${String(
+                                        row.hmrc_correlation_id
+                                      ).slice(0, 18)}`
+                                    : ""}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
 
-                      const data = await response.json();
+                      <td style={styles.td}>
+                        <div style={styles.actionRow}>
+                          {!taxYearIsImmutable && (
+                            <Link
+                              href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/quarters/${q.id}`}
+                              style={styles.smallButton}
+                            >
+                              Open
+                            </Link>
+                          )}
 
-                      if (!response.ok || !data.success) {
-                        throw new Error(
-                          data.error ||
-                            data.message ||
-                            "HMRC submission failed"
-                        );
-                      }
+                          {canSubmitQuarter && (
+                            <button
+                              style={
+                                hasFailedSource
+                                  ? styles.retryQuarterButton
+                                  : styles.submitQuarterButton
+                              }
+                              disabled={submittingQuarterId === q.id}
+                              onClick={() => submitQuarter(q, hasFailedSource)}
+                            >
+                              {submittingQuarterId === q.id
+                                ? "Working..."
+                                : hasFailedSource
+                                  ? "Retry Failed"
+                                  : "Submit Quarter"}
+                            </button>
+                          )}
 
-                      setMessage(
-                        `${q.quarter_name} submitted successfully to HMRC.`
-                      );
+                          {sourceSubmitted && (
+                            <span style={styles.lockedQuarterBadge}>
+                              HMRC Submitted
+                            </span>
+                          )}
 
-                      await loadData();
-                    } catch (e: any) {
-                      setMessage(
-                        e.message ||
-                          "Quarter submission failed."
-                      );
-                    }
-                  }}
-                >
-                  Submit Quarter
-                </button>
-              )}
-
-            {quarterLocked && (
-              <span style={styles.lockedQuarterBadge}>
-                HMRC Submitted
-              </span>
-            )}
-
-            {taxYearIsImmutable && (
-              <span style={styles.disabledButton}>
-                Locked
-              </span>
-            )}
-          </div>
-        </td>
-      </tr>
-    );
-  })}
-</tbody>
+                          {taxYearIsImmutable && (
+                            <span style={styles.disabledButton}>Locked</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
             </table>
           </div>
         )}
@@ -1401,6 +1511,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     color: "#15803d",
   },
+  failValue: {
+    fontSize: "24px",
+    fontWeight: 900,
+    color: "#b91c1c",
+  },
   passText: {
     color: "#15803d",
     fontWeight: 900,
@@ -1578,48 +1693,84 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "12px",
   },
   preparedBadge: {
-  display: "inline-flex",
-  padding: "5px 9px",
-  borderRadius: "999px",
-  background: "#fef3c7",
-  color: "#92400e",
-  fontWeight: 800,
-  fontSize: "12px",
-},
-
-successBadge: {
-  display: "inline-flex",
-  padding: "5px 9px",
-  borderRadius: "999px",
-  background: "#dcfce7",
-  color: "#166534",
-  fontWeight: 800,
-  fontSize: "12px",
-},
-
-submitQuarterButton: {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  border: "none",
-  background: "#16a34a",
-  color: "white",
-  padding: "8px 12px",
-  borderRadius: "10px",
-  fontWeight: 800,
-  cursor: "pointer",
-},
-
-lockedQuarterBadge: {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  background: "#dcfce7",
-  color: "#166534",
-  padding: "8px 12px",
-  borderRadius: "10px",
-  fontWeight: 900,
-},
+    display: "inline-flex",
+    padding: "5px 9px",
+    borderRadius: "999px",
+    background: "#fef3c7",
+    color: "#92400e",
+    fontWeight: 800,
+    fontSize: "12px",
+  },
+  successBadge: {
+    display: "inline-flex",
+    padding: "5px 9px",
+    borderRadius: "999px",
+    background: "#dcfce7",
+    color: "#166534",
+    fontWeight: 800,
+    fontSize: "12px",
+  },
+  overdueBadge: {
+    display: "inline-flex",
+    padding: "5px 9px",
+    borderRadius: "999px",
+    background: "#fee2e2",
+    color: "#991b1b",
+    fontWeight: 900,
+    fontSize: "12px",
+  },
+  dueSoonBadge: {
+    display: "inline-flex",
+    padding: "5px 9px",
+    borderRadius: "999px",
+    background: "#fef3c7",
+    color: "#92400e",
+    fontWeight: 900,
+    fontSize: "12px",
+  },
+  notDueBadge: {
+    display: "inline-flex",
+    padding: "5px 9px",
+    borderRadius: "999px",
+    background: "#e0f2fe",
+    color: "#075985",
+    fontWeight: 900,
+    fontSize: "12px",
+  },
+  submitQuarterButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "none",
+    background: "#16a34a",
+    color: "white",
+    padding: "8px 12px",
+    borderRadius: "10px",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  retryQuarterButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "none",
+    background: "#b91c1c",
+    color: "white",
+    padding: "8px 12px",
+    borderRadius: "10px",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  lockedQuarterBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#dcfce7",
+    color: "#166534",
+    padding: "8px 12px",
+    borderRadius: "10px",
+    fontWeight: 900,
+  },
   sourceStack: {
     display: "grid",
     gap: "8px",
@@ -1643,6 +1794,11 @@ lockedQuarterBadge: {
     color: "#64748b",
     fontSize: "12px",
     fontWeight: 700,
+  },
+  actionRow: {
+    display: "flex",
+    gap: "8px",
+    flexWrap: "wrap",
   },
   smallButton: {
     display: "inline-flex",

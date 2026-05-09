@@ -245,16 +245,18 @@ export async function POST(req: NextRequest) {
     }
 
     const unpreparedSources = sourcesWithTransactions.filter((source: any) => {
-      const sourceRecord = sourceRecordsById.get(String(source.sourceRowId));
+  const sourceRecord = sourceRecordsById.get(String(source.sourceRowId));
 
-      return ![
-        "prepared",
-        "ready_to_submit",
-        "submitted",
-        "accepted",
-        "finalised",
-      ].includes(normalise(sourceRecord?.status || source.status));
-    });
+  return ![
+    "prepared",
+    "ready_to_submit",
+    "submitted",
+    "accepted",
+    "finalised",
+    "submission_failed",
+    "partially_submitted",
+  ].includes(normalise(sourceRecord?.status || source.status));
+});
 
     if (unpreparedSources.length > 0 && !isRetry && !isAmendment) {
       return NextResponse.json(
