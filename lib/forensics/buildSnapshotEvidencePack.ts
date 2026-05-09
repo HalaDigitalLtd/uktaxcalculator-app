@@ -1,4 +1,9 @@
 import { validateSnapshotFreeze } from "./validateSnapshotFreeze";
+import { validateDigitalLinkEvidence } from "./validateDigitalLinkEvidence";
+import { scoreEvidenceRisk } from "./scoreEvidenceRisk";
+import { buildAmendmentDeltaEvidence } from "./buildAmendmentDeltaEvidence";
+import { buildOperationalAlerts } from "./buildOperationalAlerts";
+
 type Row = Record<string, any>;
 
 function countItems(value: any) {
@@ -39,7 +44,11 @@ export function buildSnapshotEvidencePack(snapshot: Row) {
   ];
 
   const warnings = checks.filter((check) => !check.ok);
+
   const freezeValidation = validateSnapshotFreeze(snapshot);
+  const digitalLinkValidation = validateDigitalLinkEvidence(snapshot);
+  const evidenceRisk = scoreEvidenceRisk(snapshot);
+  const amendmentDelta = buildAmendmentDeltaEvidence(snapshot);
 
   const freezeStatus = {
     isImmutableRecord: true,
@@ -101,6 +110,19 @@ export function buildSnapshotEvidencePack(snapshot: Row) {
     ].filter(Boolean),
   };
 
+  const operationalAlerts = buildOperationalAlerts({
+    freezeValidation,
+    digitalLinkValidation,
+    tamperRisk,
+    amendmentDelta,
+    evidenceRisk,
+    lineage: {
+      isReplayed: snapshot.is_replayed,
+      replayOfSnapshotId: snapshot.replay_of_snapshot_id,
+    },
+    warnings,
+  });
+
   return {
     snapshotId: snapshot.id,
     generatedFrom: "hmrc_submission_snapshots",
@@ -109,7 +131,11 @@ export function buildSnapshotEvidencePack(snapshot: Row) {
     freezeStatus,
     freezeValidation,
     digitalLink,
+    digitalLinkValidation,
     tamperRisk,
+    evidenceRisk,
+    amendmentDelta,
+    operationalAlerts,
 
     identity: {
       submissionType: snapshot.submission_type,
