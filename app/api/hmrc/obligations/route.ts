@@ -31,6 +31,180 @@ function getTaxYearLabelFromEndDate(endDate: string) {
   return `${startYear}-${String(endYear).slice(-2)}`;
 }
 
+function getClientDisplayName(client: any) {
+  return (
+    `${client?.first_name || ""} ${client?.last_name || ""}`.trim() ||
+    client?.business_name ||
+    client?.email ||
+    client?.client_email ||
+    "HMRC Client"
+  );
+}
+
+function getFirstBusiness(hmrcData: any) {
+  const businesses = Array.isArray(hmrcData?.obligations)
+    ? hmrcData.obligations
+    : [];
+
+  return businesses[0] || null;
+}
+
+function buildProfileWarnings(client: any, hmrcData: any) {
+  const warnings: string[] = [];
+  const firstBusiness = getFirstBusiness(hmrcData);
+
+  if (!client?.nino) warnings.push("Client NINO is missing.");
+  if (!client?.utr) warnings.push("Client UTR is missing.");
+  if (!client?.mtd_income_tax_id) {
+    warnings.push("MTD Income Tax ID is not stored on the client profile.");
+  }
+  if (!firstBusiness?.businessId && !client?.hmrc_business_id) {
+    warnings.push("HMRC business/income source ID was not detected.");
+  }
+  if (!firstBusiness?.typeOfBusiness && !client?.hmrc_income_source_type) {
+    warnings.push("HMRC income source type was not detected.");
+  }
+  if (!client?.business_name) {
+    warnings.push("Business/full name is not stored on the client profile.");
+  }
+  if (!client?.postcode) {
+    warnings.push("Postcode is not stored on the client profile.");
+  }
+
+  return warnings;
+}
+
+async function saveHmrcProfileSnapshot(params: {
+  client: any;
+  user: any;
+  hmrcData: any;
+  correlationId: string | null;
+  testScenario: string;
+}) {
+  const { client, user, hmrcData, correlationId, testScenario } = params;
+
+  const firstBusiness = getFirstBusiness(hmrcData);
+
+  const detectedBusinessId =
+    firstBusiness?.businessId || client.hmrc_business_id || null;
+
+  const detectedIncomeSourceType =
+    firstBusiness?.typeOfBusiness || client.hmrc_income_source_type || null;
+
+  const warnings = buildProfileWarnings(client, hmrcData);
+
+  const profileSnapshot = {
+    source: "hmrc_obligations_sync",
+    testScenario,
+    correlationId,
+    obligationsBusinessCount: Array.isArray(hmrcData?.obligations)
+      ? hmrcData.obligations.length
+      : 0,
+    detectedBusinessId,
+    detectedIncomeSourceType,
+    clientProfileAtSync: {
+      id: client.id,
+      firm_id: client.firm_id,
+      first_name: client.first_name,
+      last_name: client.last_name,
+      business_name: client.business_name,
+      email: client.email || client.client_email,
+      nino: client.nino,
+      utr: client.utr,
+      mtd_income_tax_id: client.mtd_income_tax_id,
+      vat_registration_number: client.vat_registration_number,
+      vat_registration_date: client.vat_registration_date,
+      eori_number: client.eori_number,
+      group_identifier: client.group_identifier,
+      hmrc_user_id: client.hmrc_user_id,
+      date_of_birth: client.date_of_birth,
+      address_line1: client.address_line1,
+      address_line2: client.address_line2,
+      city: client.city,
+      postcode: client.postcode,
+    },
+    hmrcObligationsResponse: hmrcData,
+  };
+
+  await supabaseAdmin.from("hmrc_profile_snapshots").insert({
+    firm_id: client.firm_id,
+    client_id: client.id,
+    source: "hmrc_obligations_sync",
+    environment: process.env.HMRC_ENVIRONMENT || "sandbox",
+
+    hmrc_user_id: client.hmrc_user_id || null,
+    group_identifier: client.group_identifier || null,
+    nino: client.nino || null,
+    utr: client.utr || null,
+    mtd_income_tax_id: client.mtd_income_tax_id || null,
+    vat_registration_number: client.vat_registration_number || null,
+    vat_registration_date: client.vat_registration_date || null,
+    eori_number: client.eori_number || null,
+
+    full_name: getClientDisplayName(client),
+    first_name: client.first_name || null,
+    last_name: client.last_name || null,
+    date_of_birth: client.date_of_birth || null,
+    address_line1: client.address_line1 || null,
+    address_line2: client.address_line2 || null,
+    city: client.city || null,
+    postcode: client.postcode || null,
+
+    raw_profile: profileSnapshot,
+    raw_identity: {
+      source: "client_profile_plus_hmrc_obligations",
+      correlationId,
+    },
+    raw_vat_profile: {
+      vat_registration_number: client.vat_registration_number || null,
+      vat_registration_date: client.vat_registration_date || null,
+      eori_number: client.eori_number || null,
+      note:
+        "VAT/EORI values are preserved from client/test-user profile. Dedicated VAT API hydration should be added when VAT scopes/endpoints are enabled.",
+    },
+    raw_itsa_profile: {
+      businessId: detectedBusinessId,
+      typeOfBusiness: detectedIncomeSourceType,
+      mtdIncomeTaxId: client.mtd_income_tax_id || null,
+      obligations: hmrcData?.obligations || [],
+    },
+
+    sync_status: warnings.length > 0 ? "synced_with_warnings" : "synced",
+    sync_warnings: warnings,
+    mismatch_report: {
+      warnings,
+      detectedBusinessId,
+      detectedIncomeSourceType,
+    },
+
+    synced_by: user.id,
+    synced_by_email: user.email || null,
+  });
+
+  const updatePayload: Record<string, any> = {
+    hmrc_connected: true,
+    hmrc_authorisation_status: "connected",
+    updated_at: new Date().toISOString(),
+  };
+
+  if (detectedBusinessId) updatePayload.hmrc_business_id = detectedBusinessId;
+  if (detectedIncomeSourceType) {
+    updatePayload.hmrc_income_source_type = detectedIncomeSourceType;
+  }
+
+  await supabaseAdmin
+    .from("clients")
+    .update(updatePayload)
+    .eq("id", client.id)
+    .eq("firm_id", client.firm_id);
+
+  return {
+    warnings,
+    detectedBusinessId,
+    detectedIncomeSourceType,
+  };
+}
+
 async function saveObligations(params: {
   firmId: string;
   clientId: string;
@@ -175,19 +349,20 @@ export async function POST(req: NextRequest) {
 
     const accessToken = await getValidHmrcToken(client.firm_id);
 
-if (!accessToken) {
-  return NextResponse.json(
-    {
-      success: false,
-      error: "HMRC connection not found. Please connect this firm to HMRC first.",
-      code: "HMRC_CONNECTION_REQUIRED",
-      connectRequired: true,
-      firmId: client.firm_id,
-      clientId: client.id,
-    },
-    { status: 401 }
-  );
-}
+    if (!accessToken) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "HMRC connection not found. Please connect this firm to HMRC first.",
+          code: "HMRC_CONNECTION_REQUIRED",
+          connectRequired: true,
+          firmId: client.firm_id,
+          clientId: client.id,
+        },
+        { status: 401 }
+      );
+    }
 
     const hmrcUrl = `https://test-api.service.hmrc.gov.uk/obligations/details/${nino}/income-and-expenditure`;
 
@@ -251,15 +426,15 @@ if (!accessToken) {
       hmrcData: data,
       correlationId,
     });
-await supabaseAdmin
-  .from("clients")
-  .update({
-    hmrc_connected: true,
-    hmrc_authorisation_status: "connected",
-    updated_at: new Date().toISOString(),
-  })
-  .eq("id", client.id)
-  .eq("firm_id", client.firm_id);
+
+    const profileSync = await saveHmrcProfileSnapshot({
+      client,
+      user,
+      hmrcData: data,
+      correlationId,
+      testScenario,
+    });
+
     const {
       provisionResult,
       matchResult,
@@ -299,6 +474,7 @@ await supabaseAdmin
       provisionWarning: provisionErrorMessage,
       matchWarning: matchErrorMessage,
       correlationId,
+      profileSync,
     });
   } catch (error: any) {
     console.error("HMRC obligations sync failed:", error);
@@ -315,18 +491,9 @@ await supabaseAdmin
           message === "Unauthorized" || message === "Missing authorization header"
             ? 401
             : message.toLowerCase().includes("access denied")
-            ? 403
-            : 500,
+              ? 403
+              : 500,
       }
     );
   }
-}
-
-function getClientDisplayName(client: any) {
-  return (
-    `${client?.first_name || ""} ${client?.last_name || ""}`.trim() ||
-    client?.email ||
-    client?.client_email ||
-    "HMRC Client"
-  );
 }

@@ -3,6 +3,8 @@ import { validateDigitalLinkEvidence } from "./validateDigitalLinkEvidence";
 import { scoreEvidenceRisk } from "./scoreEvidenceRisk";
 import { buildAmendmentDeltaEvidence } from "./buildAmendmentDeltaEvidence";
 import { buildOperationalAlerts } from "./buildOperationalAlerts";
+import { buildEvidencePdfModel } from "./buildEvidencePdfModel";
+import { generateEvidencePdfHtml } from "./generateEvidencePdfHtml";
 
 type Row = Record<string, any>;
 
@@ -22,7 +24,7 @@ function hasMeaningfulValue(value: any) {
   return value !== undefined && value !== null && value !== "";
 }
 
-export function buildSnapshotEvidencePack(snapshot: Row) {
+export function buildSnapshotEvidencePack(snapshot: Row): Row {
   const checks = [
     { key: "payload_hash", label: "Payload hash preserved", ok: bool(snapshot.payload_hash) },
     { key: "ledger_hash", label: "Ledger hash preserved", ok: bool(snapshot.ledger_hash) },
@@ -122,7 +124,74 @@ export function buildSnapshotEvidencePack(snapshot: Row) {
     },
     warnings,
   });
-
+const evidencePdfModel = buildEvidencePdfModel({
+  snapshotId: snapshot.id,
+  generatedFrom: "hmrc_submission_snapshots",
+  identity: {
+    submissionType: snapshot.submission_type,
+    workflowStatus: snapshot.workflow_status,
+    environment: snapshot.environment,
+    submissionAttempt: snapshot.submission_attempt,
+    sourceRoute: snapshot.source_route,
+    sourceTable: snapshot.source_table,
+    sourceRecordId: snapshot.source_record_id,
+  },
+  hmrcReferences: {
+    correlationId: snapshot.hmrc_correlation_id,
+    submissionId: snapshot.hmrc_submission_id,
+    amendmentId: snapshot.hmrc_amendment_id,
+    idempotencyKey: snapshot.idempotency_key,
+  },
+  actor: {
+    submittedBy: snapshot.submitted_by,
+    submittedByEmail: snapshot.submitted_by_email,
+    submittedByRole: snapshot.submitted_by_role,
+    submittedAt: snapshot.submitted_at,
+    lockedAt: snapshot.locked_at,
+  },
+  financials: {
+    incomeTotal: snapshot.income_total,
+    expenseTotal: snapshot.expense_total,
+    profitTotal: snapshot.profit_total,
+    transactionCount: snapshot.transaction_count,
+    originalTotals: snapshot.original_totals,
+    adjustmentTotals: snapshot.adjustment_totals,
+    submittedTotals: snapshot.submitted_totals,
+  },
+  hashes: {
+    payloadHash: snapshot.payload_hash,
+    ledgerHash: snapshot.ledger_hash,
+    totalsHash: snapshot.totals_hash,
+    submissionHash: snapshot.submission_hash,
+  },
+  freezeValidation,
+  digitalLinkValidation,
+  evidenceRisk,
+  operationalAlerts,
+  amendmentDelta,
+  lineage: {
+    amendmentId: snapshot.amendment_id,
+    amendmentReason: snapshot.amendment_reason,
+    originalSnapshotId: snapshot.original_snapshot_id,
+    previousSnapshotId: snapshot.previous_snapshot_id,
+    replayOfSnapshotId: snapshot.replay_of_snapshot_id,
+    isFinal: snapshot.is_final,
+    isReplayed: snapshot.is_replayed,
+  },
+  rawEvidence: {
+    hmrcPayload: snapshot.hmrc_payload,
+    hmrcResponse: snapshot.hmrc_response,
+    fraudHeaders: snapshot.fraud_headers,
+    tenantContext: snapshot.tenant_context,
+    auditContext: snapshot.audit_context,
+    digitalLinkMetadata: snapshot.digital_link_metadata,
+  },
+  rawSnapshotReference: {
+    clientId: snapshot.client_id,
+    taxYearId: snapshot.tax_year_id,
+  },
+});
+const evidencePdfHtml = generateEvidencePdfHtml(evidencePdfModel);
   return {
     snapshotId: snapshot.id,
     generatedFrom: "hmrc_submission_snapshots",
@@ -136,6 +205,8 @@ export function buildSnapshotEvidencePack(snapshot: Row) {
     evidenceRisk,
     amendmentDelta,
     operationalAlerts,
+    evidencePdfModel,
+    evidencePdfHtml,
 
     identity: {
       submissionType: snapshot.submission_type,
