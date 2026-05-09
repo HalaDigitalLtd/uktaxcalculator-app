@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import { getValidHmrcToken } from "../../../../lib/hmrc/getValidHmrcToken";
 import { hmrcRequest } from "../../../../lib/hmrc/client";
 import { buildFraudHeaders } from "../../../../lib/hmrc/fraudHeaders";
+import { createHmrcSubmissionSnapshot } from "../../../../lib/hmrcSubmissionSnapshots";
 import { getTaxYearLedgerSnapshot } from "../../../../lib/quarterLedger";
 import {
   getAuthenticatedUserFromRequest,
@@ -625,7 +626,67 @@ if (taxYearLedger.totals.transactionCount <= 0) {
         canonicalWorkflowTable: "tax_year_final_declarations",
       },
     } as any);
+    const taxYearTransactions = taxYearLedger.quarters.flatMap(
+  (q: any) => q.transactions || []
+);
 
+const taxYearSourceTotals = taxYearLedger.quarters.flatMap(
+  (q: any) => q.sourceTotals || []
+);
+
+const taxYearBatches = taxYearLedger.quarters.flatMap(
+  (q: any) => q.batches || []
+);
+const snapshotRecord = await createHmrcSubmissionSnapshot({
+  firmId: client.firm_id,
+  clientId: client.id,
+  taxYearId: taxYear.id,
+
+  submissionType: "final_declaration",
+  workflowStatus: "submitted",
+  sourceRoute: "/api/hmrc/submit-final-declaration",
+  sourceTable: "tax_year_final_declarations",
+  sourceRecordId: finalDeclaration.id,
+
+  hmrcPayload: finalPayload,
+  hmrcResponse: hmrcData,
+  fraudHeaders: buildFraudHeaders(req),
+
+  submittedTotals: {
+    income: annualIncome,
+    expenses: annualExpenses,
+    profit: annualProfit,
+  },
+
+  ledgerSnapshot: taxYearLedger,
+  transactionSnapshot: taxYearTransactions,
+sourceTotalsSnapshot: taxYearSourceTotals,
+batchSnapshot: taxYearBatches,
+
+  hmrcCorrelationId,
+  hmrcSubmissionId,
+
+  submissionAttempt: attemptNumber,
+
+  submittedBy: user.id,
+  submittedByEmail: user.email || null,
+  submittedByRole: userFirmRole,
+
+  tenantContext: {
+    firmId: client.firm_id,
+    clientId: client.id,
+    taxYearId: taxYear.id,
+  },
+
+  auditContext: {
+    immutableSnapshot: true,
+    workflow: "final_declaration",
+    amendmentSafe: true,
+    digitalLinkSource: "quarter_transactions",
+    sourceCount: taxYearSourceTotals.length,
+    transactionCount: taxYearLedger.totals.transactionCount,
+  },
+});
     await insertFinalDeclarationAudit({
       workflowId: finalDeclaration.id,
       firmId: client.firm_id,
