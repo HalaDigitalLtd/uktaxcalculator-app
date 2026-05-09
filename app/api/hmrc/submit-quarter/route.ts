@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import { getValidHmrcToken } from "../../../../lib/hmrc/getValidHmrcToken";
 import { hmrcRequest } from "../../../../lib/hmrc/client";
+import { createHmrcSubmissionSnapshot } from "../../../../lib/hmrcSubmissionSnapshots";
 import { buildFraudHeaders } from "../../../../lib/hmrc/fraudHeaders";
 import {
   buildSelfEmploymentPayload,
@@ -487,7 +488,71 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
+const snapshotRecord = await createHmrcSubmissionSnapshot({
+  firmId: client.firm_id,
+  clientId: client.id,
+  taxYearId: taxYear.id,
+  quarterId,
+  submissionType: "quarterly_update",
+  workflowStatus: allSuccess
+    ? "submitted"
+    : anySuccess
+      ? "partially_submitted"
+      : "failed",
+  sourceRoute: "/api/hmrc/submit-quarter",
+  sourceTable: "submissions",
+  sourceRecordId: submissionRecord.id,
 
+  hmrcPayload: {
+    requests: hmrcResults.map((r) => ({
+      sourceRowId: r.sourceRowId,
+      obligationId: r.obligationId,
+      businessType: r.businessType,
+      businessId: r.businessId,
+      periodStart: r.periodStart,
+      periodEnd: r.periodEnd,
+      endpoint: r.endpoint,
+      skipped: r.skipped || false,
+      payload: r.payload,
+    })),
+  },
+  hmrcResponse: hmrcResults,
+  fraudHeaders,
+
+  submittedTotals: ledger.totals,
+  ledgerSnapshot: {
+    quarter,
+    totals: ledger.totals,
+    sourceTotals: ledger.sourceTotals,
+  },
+  transactionSnapshot: ledger.transactions,
+  sourceTotalsSnapshot: ledger.sourceTotals,
+  batchSnapshot: ledger.batches,
+
+  hmrcCorrelationId:
+    hmrcResults.map((r) => r.correlationId).filter(Boolean).join(", ") || null,
+  hmrcSubmissionId:
+    hmrcResults.map((r) => r.hmrcSubmissionId).filter(Boolean).join(", ") || null,
+
+  submissionAttempt: (previousLogs?.length || 0) + 1,
+  submittedBy: user.id,
+  submittedByEmail: user.email || null,
+  submittedByRole: null,
+
+  tenantContext: {
+    firmId: client.firm_id,
+    clientId: client.id,
+    taxYearId: taxYear.id,
+    quarterId,
+  },
+  auditContext: {
+    source: "canonical_quarter_ledger",
+    immutableSnapshot: true,
+    digitalLinkSource: "quarter_transactions",
+    transactionCount: ledger.totals.transactionCount,
+    batchCount: ledger.batches.length,
+  },
+});
     await supabaseAdmin
       .from("hmrc_submission_logs")
       .update({ submission_id: submissionRecord.id })
@@ -516,6 +581,7 @@ export async function POST(req: NextRequest) {
           last_submission_status: result.success ? "submitted" : "failed",
           evidence_snapshot: {
             submissionId: submissionRecord.id,
+            snapshotId: snapshotRecord.id,
             sourceRowId: result.sourceRowId,
             obligationId: result.obligationId,
             businessType: result.businessType,
