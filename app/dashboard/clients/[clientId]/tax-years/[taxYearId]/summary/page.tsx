@@ -172,21 +172,23 @@ export default function TaxYearSummaryPage() {
       .limit(20);
 
     setSubmissionLogs(logs || []);
-const { data: snapshots, error: snapshotsError } = await supabase
-  .from("hmrc_submission_snapshots")
-  .select("*")
-  .eq("client_id", clientId)
-  .eq("tax_year_id", taxYearId)
-  .order("created_at", { ascending: false })
-  .limit(50);
 
-if (snapshotsError) {
-  setMessage(`Snapshot evidence load error: ${snapshotsError.message}`);
-  setLoading(false);
-  return;
-}
+    const { data: snapshots, error: snapshotsError } = await supabase
+      .from("hmrc_submission_snapshots")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("tax_year_id", taxYearId)
+      .order("created_at", { ascending: false })
+      .limit(50);
 
-setSubmissionSnapshots(snapshots || []);
+    if (snapshotsError) {
+      setMessage(`Snapshot evidence load error: ${snapshotsError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    setSubmissionSnapshots(snapshots || []);
+
     const { data: amendmentRows, error: amendmentError } = await supabase
       .from("tax_year_amendments")
       .select("*")
@@ -977,104 +979,119 @@ setSubmissionSnapshots(snapshots || []);
       </section>
 
       <section style={styles.card}>
-  <h2 style={styles.sectionTitle}>Immutable Submission Evidence</h2>
+        <h2 style={styles.sectionTitle}>Immutable Submission Evidence</h2>
 
-  {submissionSnapshots.length === 0 ? (
-    <p style={styles.muted}>
-      No immutable HMRC evidence snapshots have been created yet.
-    </p>
-  ) : (
-    <div style={styles.historyList}>
-      {submissionSnapshots.map((snapshot) => (
-        <div key={snapshot.id} style={styles.historyCard}>
-          <div>
-            <strong>
-              {String(snapshot.submission_type || "submission").replaceAll(
-                "_",
-                " "
-              )}
-            </strong>
-            <p style={styles.muted}>
-              Created: {formatDate(snapshot.created_at)}
-            </p>
-            <p style={styles.muted}>
-              Status:{" "}
-              <strong>
-                {String(snapshot.workflow_status || "-").replaceAll("_", " ")}
-              </strong>
-            </p>
+        {submissionSnapshots.length === 0 ? (
+          <p style={styles.muted}>
+            No immutable HMRC evidence snapshots have been created yet.
+          </p>
+        ) : (
+          <div style={styles.historyList}>
+            {submissionSnapshots.map((snapshot) => (
+              <div key={snapshot.id} style={styles.historyCard}>
+                <div>
+                  <strong>
+                    {String(snapshot.submission_type || "submission").replaceAll(
+                      "_",
+                      " "
+                    )}
+                  </strong>
+
+                  <p style={styles.muted}>
+                    Created: {formatDate(snapshot.created_at)}
+                  </p>
+
+                  <p style={styles.muted}>
+                    Status:{" "}
+                    <strong>
+                      {String(snapshot.workflow_status || "-").replaceAll(
+                        "_",
+                        " "
+                      )}
+                    </strong>
+                  </p>
+                </div>
+
+                <div style={styles.historyMeta}>
+                  <span>
+                    Snapshot ID:{" "}
+                    <strong style={styles.monospace}>
+                      {String(snapshot.id || "").slice(0, 8)}
+                    </strong>
+                  </span>
+
+                  <span>
+                    HMRC submission:{" "}
+                    <strong style={styles.monospace}>
+                      {snapshot.hmrc_submission_id || "N/A"}
+                    </strong>
+                  </span>
+
+                  <span>
+                    Correlation:{" "}
+                    <strong style={styles.monospace}>
+                      {snapshot.hmrc_correlation_id || "N/A"}
+                    </strong>
+                  </span>
+
+                  <span>
+                    Payload hash:{" "}
+                    <strong style={styles.monospace}>
+                      {String(snapshot.payload_hash || "").slice(0, 12) || "N/A"}
+                    </strong>
+                  </span>
+
+                  <span>
+                    Ledger hash:{" "}
+                    <strong style={styles.monospace}>
+                      {String(snapshot.ledger_hash || "").slice(0, 12) || "N/A"}
+                    </strong>
+                  </span>
+                </div>
+
+                <Link
+                  href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.id}`}
+                  style={styles.secondaryButton}
+                >
+                  Open Snapshot
+                </Link>
+              </div>
+            ))}
           </div>
+        )}
+      </section>
 
-          <div style={styles.historyMeta}>
-            <span>
-              Snapshot ID:{" "}
-              <strong style={styles.monospace}>
-                {String(snapshot.id || "").slice(0, 8)}
-              </strong>
-            </span>
-            <span>
-              HMRC submission:{" "}
-              <strong style={styles.monospace}>
-                {snapshot.hmrc_submission_id || "N/A"}
-              </strong>
-            </span>
-            <span>
-              Correlation:{" "}
-              <strong style={styles.monospace}>
-                {snapshot.hmrc_correlation_id || "N/A"}
-              </strong>
-            </span>
-            <span>
-              Payload hash:{" "}
-              <strong style={styles.monospace}>
-                {String(snapshot.payload_hash || "").slice(0, 12) || "N/A"}
-              </strong>
-            </span>
-            <span>
-              Ledger hash:{" "}
-              <strong style={styles.monospace}>
-                {String(snapshot.ledger_hash || "").slice(0, 12) || "N/A"}
-              </strong>
-            </span>
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>HMRC Final Declaration History</h2>
+
+        {submissionLogs.length === 0 ? (
+          <p style={styles.muted}>No HMRC final declaration submissions yet.</p>
+        ) : (
+          <div style={styles.historyList}>
+            {submissionLogs.map((log) => (
+              <div key={log.id} style={styles.historyCard}>
+                <div>
+                  <strong>{log.status || "Unknown status"}</strong>
+                  <p style={styles.muted}>Created: {formatDate(log.created_at)}</p>
+                </div>
+
+                <div style={styles.historyMeta}>
+                  <span>
+                    HTTP: <strong>{log.http_status || "N/A"}</strong>
+                  </span>
+                  <span>
+                    Submission: <strong>{log.hmrc_submission_id || "N/A"}</strong>
+                  </span>
+                  <span>
+                    Correlation:{" "}
+                    <strong>{log.hmrc_correlation_id || "N/A"}</strong>
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
-        </div>
-      ))}
-    </div>
-  )}
-</section>
-
-<section style={styles.card}>
-  <h2 style={styles.sectionTitle}>HMRC Final Declaration History</h2>
-
-  {submissionLogs.length === 0 ? (
-    <p style={styles.muted}>No HMRC final declaration submissions yet.</p>
-  ) : (
-    <div style={styles.historyList}>
-      {submissionLogs.map((log) => (
-        <div key={log.id} style={styles.historyCard}>
-          <div>
-            <strong>{log.status || "Unknown status"}</strong>
-            <p style={styles.muted}>Created: {formatDate(log.created_at)}</p>
-          </div>
-
-          <div style={styles.historyMeta}>
-            <span>
-              HTTP: <strong>{log.http_status || "N/A"}</strong>
-            </span>
-            <span>
-              Submission: <strong>{log.hmrc_submission_id || "N/A"}</strong>
-            </span>
-            <span>
-              Correlation: <strong>{log.hmrc_correlation_id || "N/A"}</strong>
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
-  )}
-</section>
-
-        
+        )}
+      </section>
     </main>
   );
 }
@@ -1156,6 +1173,9 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: "none",
   },
   secondaryButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
     border: "1px solid #cbd5e1",
     background: "white",
     color: "#111827",
@@ -1163,6 +1183,8 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "12px",
     fontWeight: 800,
     cursor: "pointer",
+    textDecoration: "none",
+    whiteSpace: "nowrap",
   },
   message: {
     background: "#eef6ff",
@@ -1491,8 +1513,9 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "12px",
   },
   historyCard: {
-    display: "flex",
-    justifyContent: "space-between",
+    display: "grid",
+    gridTemplateColumns: "minmax(220px, 1fr) minmax(280px, 1.5fr) auto",
+    alignItems: "center",
     gap: "16px",
     border: "1px solid #e5e7eb",
     borderRadius: "14px",
