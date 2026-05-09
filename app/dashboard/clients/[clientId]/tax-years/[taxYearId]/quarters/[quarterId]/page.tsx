@@ -40,6 +40,7 @@ const READY_STATUSES = [
   "finalised",
   "accepted",
   "ready_to_submit",
+  "approved",
 ];
 
 const CATEGORY_OPTIONS: CategoryOption[] = [
@@ -117,7 +118,6 @@ function normaliseDate(value: any) {
   const raw = String(value || "").trim();
 
   if (!raw) return "";
-
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
 
   const slashMatch = raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
@@ -173,19 +173,30 @@ function guessCategory(value: any) {
 }
 
 function createImportRowHash(input: {
-  source_row_id: string;
+  quarter_income_source_id: string;
   transaction_date: string;
   description: string;
   category: string;
   amount: number;
 }) {
   return [
-    input.source_row_id,
+    input.quarter_income_source_id,
     input.transaction_date,
     normaliseText(input.description),
     input.category,
     Number(input.amount || 0).toFixed(2),
   ].join("|");
+}
+
+function createSimpleFileHash(input: string) {
+  let hash = 0;
+
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(i);
+    hash |= 0;
+  }
+
+  return `csv_${Math.abs(hash)}_${input.length}`;
 }
 
 function parseCsvLine(line: string) {
@@ -304,9 +315,10 @@ export default function QuarterWorkspacePage() {
   });
 
   const [editingTransactionId, setEditingTransactionId] = useState("");
-  const [showDeletedTransactions, setShowDeletedTransactions] = useState(false);
+  const [showExcludedTransactions, setShowExcludedTransactions] = useState(false);
 
   const [csvFileName, setCsvFileName] = useState("");
+  const [csvFileHash, setCsvFileHash] = useState("");
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<Row[]>([]);
   const [csvMapping, setCsvMapping] = useState<CsvMapping>({
@@ -330,6 +342,8 @@ export default function QuarterWorkspacePage() {
 
   const sourceLocked = Boolean(
     selectedSource?.locked ||
+      selectedSource?.obligation_locked ||
+      selectedSource?.workflow_state === "locked" ||
       selectedSource?.status === "submitted" ||
       selectedSource?.status === "accepted" ||
       selectedSource?.last_submission_status === "accepted"
@@ -341,20 +355,22 @@ export default function QuarterWorkspacePage() {
     if (!selectedSourceId) return [];
 
     return transactions.filter((row) => {
-      if (row.source_row_id !== selectedSourceId) return false;
-      if (showDeletedTransactions) return true;
-      return row.is_deleted !== true;
+      if (row.quarter_income_source_id !== selectedSourceId) return false;
+      if (showExcludedTransactions) return true;
+      return row.posting_status !== "excluded" && row.posting_status !== "superseded";
     });
-  }, [transactions, selectedSourceId, showDeletedTransactions]);
+  }, [transactions, selectedSourceId, showExcludedTransactions]);
 
   const activeTransactions = useMemo(() => {
-    return transactions.filter((row) => row.is_deleted !== true);
+    return transactions.filter(
+      (row) => row.posting_status !== "excluded" && row.posting_status !== "superseded"
+    );
   }, [transactions]);
 
   const selectedImportBatches = useMemo(() => {
     if (!selectedSourceId) return [];
     return importBatches.filter(
-      (batch) => batch.source_row_id === selectedSourceId
+      (batch) => batch.quarter_income_source_id === selectedSourceId
     );
   }, [importBatches, selectedSourceId]);
 
@@ -363,7 +379,10 @@ export default function QuarterWorkspacePage() {
     let expenses = 0;
 
     filteredTransactions
-      .filter((row) => row.is_deleted !== true)
+      .filter(
+        (row) =>
+          row.posting_status !== "excluded" && row.posting_status !== "superseded"
+      )
       .forEach((row) => {
         const amount = toNumber(row.amount);
 
@@ -384,9 +403,9 @@ export default function QuarterWorkspacePage() {
     const existingHashes = new Set(
       activeTransactions.map((row) =>
         String(
-          row.import_row_hash ||
+          row.source_row_hash ||
             createImportRowHash({
-              source_row_id: String(row.source_row_id || ""),
+              quarter_income_source_id: String(row.quarter_income_source_id || ""),
               transaction_date: String(row.transaction_date || ""),
               description: String(row.description || ""),
               category: String(row.category || ""),
@@ -406,7 +425,7 @@ export default function QuarterWorkspacePage() {
       const amount = Math.abs(toNumber(row[csvMapping.amount]));
 
       const importRowHash = createImportRowHash({
-        source_row_id: selectedSource.id,
+        quarter_income_source_id: selectedSource.id,
         transaction_date: transactionDate,
         description,
         category,
@@ -622,24 +641,20 @@ export default function QuarterWorkspacePage() {
       const sources = sourceData || [];
       setSourceRows(sources);
 
-      if (
-        preferredSourceId &&
-        sources.some((row) => row.id === preferredSourceId)
-      ) {
-        setSelectedSourceId(preferredSourceId);
-      } else if (
-        selectedSourceId &&
-        sources.some((row) => row.id === selectedSourceId)
-      ) {
-        setSelectedSourceId(selectedSourceId);
-      } else if (sources.length > 0) {
-        setSelectedSourceId(sources[0].id);
-      } else {
-        setSelectedSourceId("");
-      }
+      const nextSourceId =
+        preferredSourceId && sources.some((row) => row.id === preferredSourceId)
+          ? preferredSourceId
+          : selectedSourceId &&
+              sources.some((row) => row.id === selectedSourceId)
+            ? selectedSourceId
+            : sources.length > 0
+              ? sources[0].id
+              : "";
 
-      const { data: transactionData, error: txError } = await supabase
-        .from("quarter_transactions")
+      setSelectedSourceId(nextSourceId);
+
+      const { data: ledgerData, error: ledgerError } = await supabase
+        .from("ledger_entries")
         .select("*")
         .eq("quarter_id", quarterId)
         .eq("tax_year_id", taxYearId)
@@ -648,11 +663,11 @@ export default function QuarterWorkspacePage() {
         .order("transaction_date", { ascending: false })
         .order("created_at", { ascending: false });
 
-      if (txError) throw txError;
-      setTransactions(transactionData || []);
+      if (ledgerError) throw ledgerError;
+      setTransactions(ledgerData || []);
 
       const { data: batchData, error: batchError } = await supabase
-        .from("csv_import_batches")
+        .from("ledger_batches")
         .select("*")
         .eq("quarter_id", quarterId)
         .eq("tax_year_id", taxYearId)
@@ -684,45 +699,32 @@ export default function QuarterWorkspacePage() {
   }, [clientId, taxYearId, quarterId]);
 
   async function recalculateSourceTotals(sourceRowId: string) {
-    if (!firmId) throw new Error("Firm context missing.");
-
-    const { data: rows, error } = await supabase
-      .from("quarter_transactions")
-      .select("amount, entry_type")
-      .eq("source_row_id", sourceRowId)
-      .eq("quarter_id", quarterId)
-      .eq("tax_year_id", taxYearId)
-      .eq("client_id", clientId)
-      .eq("firm_id", firmId)
-      .eq("is_deleted", false);
+    const { error } = await supabase.rpc(
+      "recalculate_quarter_income_source_from_ledger",
+      {
+        p_quarter_income_source_id: sourceRowId,
+      }
+    );
 
     if (error) throw error;
+  }
 
-    let income = 0;
-    let expenses = 0;
+  function buildLedgerCommonPayload() {
+    if (!selectedSource) throw new Error("Select income source first.");
 
-    (rows || []).forEach((row) => {
-      const amount = toNumber(row.amount);
-      if (row.entry_type === "income") income += amount;
-      if (row.entry_type === "expense") expenses += amount;
-    });
-
-    const { error: updateError } = await supabase
-      .from("quarter_income_sources")
-      .update({
-        income,
-        expenses,
-        profit: income - expenses,
-        status: (rows || []).length > 0 ? "draft" : "not_started",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", sourceRowId)
-      .eq("firm_id", firmId)
-      .eq("client_id", clientId)
-      .eq("tax_year_id", taxYearId)
-      .eq("quarter_id", quarterId);
-
-    if (updateError) throw updateError;
+    return {
+      firm_id: firmId,
+      client_id: clientId,
+      tax_year_id: taxYearId,
+      quarter_id: quarterId,
+      quarter_income_source_id: selectedSource.id,
+      income_source_id:
+        selectedSource.income_source_id ||
+        selectedSource.hmrc_income_source_id ||
+        selectedSource.canonical_income_source_id ||
+        null,
+      official_obligation_id: selectedSource.official_obligation_id || null,
+    };
   }
 
   async function addTransaction() {
@@ -770,51 +772,71 @@ export default function QuarterWorkspacePage() {
     }
 
     const categoryMeta = getCategoryMeta(newTransaction.category);
+    const common = buildLedgerCommonPayload();
 
     setSaving(true);
 
     try {
-      const payload = {
-        firm_id: firmId,
-        client_id: clientId,
-        tax_year_id: taxYearId,
-        quarter_id: quarterId,
-        source_row_id: selectedSource.id,
-        hmrc_source: selectedSource.hmrc_source,
-        hmrc_business_id: selectedSource.hmrc_business_id,
+      const now = new Date().toISOString();
+      const rowHash = createImportRowHash({
+        quarter_income_source_id: selectedSource.id,
         transaction_date: newTransaction.transaction_date,
         description: String(newTransaction.description || "").trim(),
         category: newTransaction.category,
+        amount,
+      });
+
+      const payload = {
+        ...common,
+        transaction_date: newTransaction.transaction_date,
+        description: String(newTransaction.description || "").trim(),
+        reference: null,
+        category: newTransaction.category,
+        hmrc_category: newTransaction.category,
         entry_type: categoryMeta.type,
         amount,
-        source_type: "manual",
-        attachment_urls: [],
-        updated_at: new Date().toISOString(),
+        source_row_hash: rowHash,
+        source_raw_data: {
+          source: "manual_entry",
+          entered_at: now,
+          entered_by: authUser?.email || authUser?.id || null,
+        },
+        digital_link_source: "manual_entry",
+        digital_link_chain: {
+          source: "manual_entry",
+          quarter_income_source_id: selectedSource.id,
+          official_obligation_id: selectedSource.official_obligation_id || null,
+          created_at: now,
+        },
+        is_adjustment: false,
+        review_status: "unreviewed",
+        posting_status: "posted",
+        created_by: authUser?.id || null,
+        created_by_email: authUser?.email || null,
+        updated_at: now,
       };
 
       if (editingTransactionId) {
         const { error } = await supabase
-          .from("quarter_transactions")
+          .from("ledger_entries")
           .update({
             ...payload,
-            edited_at: new Date().toISOString(),
-            edited_by: authUser?.id || null,
+            updated_at: now,
           })
           .eq("id", editingTransactionId)
           .eq("firm_id", firmId)
           .eq("client_id", clientId)
           .eq("tax_year_id", taxYearId)
-          .eq("quarter_id", quarterId);
+          .eq("quarter_id", quarterId)
+          .eq("locked", false);
 
         if (error) throw error;
-        setMessage("Transaction updated.");
+        setMessage("Ledger entry updated.");
       } else {
-        const { error } = await supabase
-          .from("quarter_transactions")
-          .insert(payload);
+        const { error } = await supabase.from("ledger_entries").insert(payload);
 
         if (error) throw error;
-        setMessage("Transaction added.");
+        setMessage("Ledger entry added.");
       }
 
       await recalculateSourceTotals(selectedSource.id);
@@ -828,7 +850,7 @@ export default function QuarterWorkspacePage() {
         amount: "",
       });
     } catch (e: any) {
-      setMessage(e.message || "Failed saving transaction.");
+      setMessage(e.message || "Failed saving ledger entry.");
     }
 
     setSaving(false);
@@ -837,6 +859,11 @@ export default function QuarterWorkspacePage() {
   function editTransaction(row: Row) {
     if (workspaceLocked) {
       setMessage("Locked records cannot be edited.");
+      return;
+    }
+
+    if (row.locked) {
+      setMessage("This ledger entry is locked.");
       return;
     }
 
@@ -858,7 +885,12 @@ export default function QuarterWorkspacePage() {
       return;
     }
 
-    const reason = window.prompt("Enter delete reason for audit trail:");
+    if (row.locked) {
+      setMessage("This ledger entry is locked.");
+      return;
+    }
+
+    const reason = window.prompt("Enter exclusion reason for audit trail:");
 
     if (!reason || !reason.trim()) return;
 
@@ -866,28 +898,27 @@ export default function QuarterWorkspacePage() {
 
     try {
       const { error } = await supabase
-        .from("quarter_transactions")
+        .from("ledger_entries")
         .update({
-          is_deleted: true,
-          deleted_at: new Date().toISOString(),
-          deleted_by: authUser?.id || null,
-          delete_reason: reason.trim(),
+          posting_status: "excluded",
+          adjustment_reason: reason.trim(),
           updated_at: new Date().toISOString(),
         })
         .eq("id", row.id)
         .eq("firm_id", firmId)
         .eq("client_id", clientId)
         .eq("tax_year_id", taxYearId)
-        .eq("quarter_id", quarterId);
+        .eq("quarter_id", quarterId)
+        .eq("locked", false);
 
       if (error) throw error;
 
-      await recalculateSourceTotals(row.source_row_id);
+      await recalculateSourceTotals(row.quarter_income_source_id);
       await loadData(selectedSourceId);
 
-      setMessage("Transaction deleted.");
+      setMessage("Ledger entry excluded from posted totals.");
     } catch (e: any) {
-      setMessage(e.message || "Failed deleting transaction.");
+      setMessage(e.message || "Failed excluding ledger entry.");
     }
 
     setSaving(false);
@@ -917,14 +948,15 @@ export default function QuarterWorkspacePage() {
     }
 
     if (
-      filteredTransactions.filter((row) => row.is_deleted !== true).length === 0
+      filteredTransactions.filter((row) => row.posting_status === "posted")
+        .length === 0
     ) {
-      setMessage("Add at least one transaction before marking prepared.");
+      setMessage("Add at least one posted ledger entry before marking prepared.");
       return;
     }
 
     setSaving(true);
-    setMessage("Preparing source...");
+    setMessage("Preparing source from ledger...");
 
     try {
       await recalculateSourceTotals(selectedSource.id);
@@ -934,6 +966,10 @@ export default function QuarterWorkspacePage() {
         .update({
           status: "prepared",
           bookkeeping_status: "prepared",
+          workflow_state: "ready_for_review",
+          workflow_state_reason: "Prepared from posted ledger entries.",
+          workflow_state_changed_at: new Date().toISOString(),
+          workflow_state_changed_by: authUser?.id || null,
           prepared_at: new Date().toISOString(),
           prepared_by: authUser?.id || null,
           updated_at: new Date().toISOString(),
@@ -947,7 +983,7 @@ export default function QuarterWorkspacePage() {
       if (error) throw error;
 
       await loadData(selectedSource.id);
-      setMessage("Income source prepared.");
+      setMessage("Income source prepared and moved to review queue.");
     } catch (e: any) {
       setMessage(e.message || "Failed preparing source.");
     }
@@ -957,6 +993,7 @@ export default function QuarterWorkspacePage() {
 
   function resetCsvImport() {
     setCsvFileName("");
+    setCsvFileHash("");
     setCsvHeaders([]);
     setCsvRows([]);
     setCsvMapping({
@@ -984,6 +1021,7 @@ export default function QuarterWorkspacePage() {
     }
 
     setCsvFileName(file.name);
+    setCsvFileHash(createSimpleFileHash(text));
     setCsvHeaders(parsed.headers);
     setCsvRows(parsed.rows);
     setCsvMapping(inferMapping(parsed.headers));
@@ -1026,27 +1064,41 @@ export default function QuarterWorkspacePage() {
     }
 
     const now = new Date().toISOString();
+    const common = buildLedgerCommonPayload();
 
     setSaving(true);
-    setMessage("Creating import batch...");
+    setMessage("Creating ledger import batch...");
 
     try {
       const { data: batch, error: batchError } = await supabase
-        .from("csv_import_batches")
+        .from("ledger_batches")
         .insert({
-          firm_id: firmId,
-          client_id: clientId,
-          tax_year_id: taxYearId,
-          quarter_id: quarterId,
-          source_row_id: selectedSource.id,
-          uploaded_by: authUser?.id || null,
-          file_name: csvFileName || "uploaded.csv",
-          imported_rows: rowsToImport.length,
-          duplicate_rows: csvStats.duplicate,
-          invalid_rows: csvStats.invalid,
-          raw_preview_snapshot: csvPreviewRows,
-          mapping_snapshot: csvMapping,
-          status: "imported",
+          ...common,
+          batch_type: "csv_import",
+          batch_status: "posted",
+          source_filename: csvFileName || "uploaded.csv",
+          source_file_hash: csvFileHash || null,
+          source_mime_type: "text/csv",
+          source_row_count: csvRows.length,
+          period_start: selectedSource.period_start || quarter?.start_date || null,
+          period_end: selectedSource.period_end || quarter?.end_date || null,
+          digital_link_metadata: {
+            source: "csv_upload",
+            uploaded_at: now,
+            uploaded_by: authUser?.email || authUser?.id || null,
+            file_name: csvFileName || "uploaded.csv",
+            file_hash: csvFileHash || null,
+          },
+          import_mapping: csvMapping,
+          validation_summary: {
+            total_rows: csvStats.total,
+            imported_rows: rowsToImport.length,
+            duplicate_rows: csvStats.duplicate,
+            invalid_rows: csvStats.invalid,
+          },
+          created_by: authUser?.id || null,
+          created_by_email: authUser?.email || null,
+          updated_at: now,
         })
         .select("*")
         .single();
@@ -1054,30 +1106,38 @@ export default function QuarterWorkspacePage() {
       if (batchError) throw batchError;
 
       const payload = rowsToImport.map((row) => ({
-        firm_id: firmId,
-        client_id: clientId,
-        tax_year_id: taxYearId,
-        quarter_id: quarterId,
-        source_row_id: selectedSource.id,
-        hmrc_source: selectedSource.hmrc_source,
-        hmrc_business_id: selectedSource.hmrc_business_id,
+        ...common,
+        ledger_batch_id: batch.id,
         transaction_date: row.transaction_date,
         description: row.description,
+        reference: `CSV row ${row.rowNumber}`,
         category: row.category,
+        hmrc_category: row.category,
         entry_type: row.entry_type,
         amount: row.amount,
-        source_type: "csv_import",
-        import_batch_id: batch.id,
-        import_row_hash: row.import_row_hash,
-        import_row_number: row.rowNumber,
-        attachment_urls: [],
-        version_no: 1,
+        source_row_number: row.rowNumber,
+        source_row_hash: row.import_row_hash,
+        source_raw_data: row.raw,
+        digital_link_source: "csv_import",
+        digital_link_chain: {
+          source: "csv_import",
+          ledger_batch_id: batch.id,
+          source_filename: csvFileName || "uploaded.csv",
+          source_file_hash: csvFileHash || null,
+          csv_row_number: row.rowNumber,
+          quarter_income_source_id: selectedSource.id,
+          official_obligation_id: selectedSource.official_obligation_id || null,
+          imported_at: now,
+        },
+        is_adjustment: false,
+        review_status: "unreviewed",
+        posting_status: "posted",
+        created_by: authUser?.id || null,
+        created_by_email: authUser?.email || null,
         updated_at: now,
       }));
 
-      const { error } = await supabase
-        .from("quarter_transactions")
-        .insert(payload);
+      const { error } = await supabase.from("ledger_entries").insert(payload);
 
       if (error) throw error;
 
@@ -1086,7 +1146,7 @@ export default function QuarterWorkspacePage() {
       resetCsvImport();
 
       setMessage(
-        `CSV import complete. Imported ${rowsToImport.length} rows. Batch: ${batch.id}`
+        `CSV import complete. Posted ${rowsToImport.length} ledger entries. Batch: ${batch.id}`
       );
     } catch (e: any) {
       setMessage(e.message || "CSV import failed.");
@@ -1101,65 +1161,72 @@ export default function QuarterWorkspacePage() {
       return;
     }
 
-    if (batch.status === "reverted") {
-      setMessage("This batch is already reverted.");
+    if (batch.batch_status === "superseded" || batch.locked) {
+      setMessage("This batch is already reverted or locked.");
       return;
     }
 
     const reason = window.prompt(
-      `Enter rollback reason for CSV batch ${batch.file_name}:`
+      `Enter rollback reason for CSV batch ${batch.source_filename}:`
     );
 
     if (!reason || !reason.trim()) return;
 
     setSaving(true);
-    setMessage("Reverting CSV import batch...");
+    setMessage("Reverting ledger batch...");
 
     try {
       const now = new Date().toISOString();
 
       const { error: txError } = await supabase
-        .from("quarter_transactions")
+        .from("ledger_entries")
         .update({
-          is_deleted: true,
-          deleted_at: now,
-          deleted_by: authUser?.id || null,
-          delete_reason: `CSV batch reverted: ${reason.trim()}`,
+          posting_status: "excluded",
+          adjustment_reason: `Ledger batch reverted: ${reason.trim()}`,
           updated_at: now,
         })
         .eq("firm_id", firmId)
         .eq("client_id", clientId)
         .eq("tax_year_id", taxYearId)
         .eq("quarter_id", quarterId)
-        .eq("source_row_id", batch.source_row_id)
-        .eq("import_batch_id", batch.id)
-        .eq("source_type", "csv_import")
-        .eq("is_deleted", false);
+        .eq("quarter_income_source_id", batch.quarter_income_source_id)
+        .eq("ledger_batch_id", batch.id)
+        .eq("posting_status", "posted")
+        .eq("locked", false);
 
       if (txError) throw txError;
 
       const { error: batchError } = await supabase
-        .from("csv_import_batches")
+        .from("ledger_batches")
         .update({
-          status: "reverted",
-          reverted_at: now,
-          reverted_by: authUser?.id || null,
-          revert_reason: reason.trim(),
+          batch_status: "superseded",
+          validation_summary: {
+            ...(batch.validation_summary || {}),
+            reverted_at: now,
+            reverted_by: authUser?.email || authUser?.id || null,
+            revert_reason: reason.trim(),
+          },
+          updated_at: now,
         })
         .eq("id", batch.id)
         .eq("firm_id", firmId)
         .eq("client_id", clientId)
         .eq("tax_year_id", taxYearId)
-        .eq("quarter_id", quarterId);
+        .eq("quarter_id", quarterId)
+        .eq("locked", false);
 
       if (batchError) throw batchError;
 
-      await recalculateSourceTotals(batch.source_row_id);
-      await loadData(selectedSourceId);
+await supabase.rpc("reconcile_ledger_batch_status", {
+  p_ledger_batch_id: batch.id,
+});
 
-      setMessage("CSV import batch reverted. Related rows were soft-deleted.");
+await recalculateSourceTotals(batch.quarter_income_source_id);
+await loadData(selectedSourceId);
+
+setMessage("Ledger batch reverted. Related entries were excluded.");
     } catch (e: any) {
-      setMessage(e.message || "Failed reverting import batch.");
+      setMessage(e.message || "Failed reverting ledger batch.");
     }
 
     setSaving(false);
@@ -1249,7 +1316,9 @@ export default function QuarterWorkspacePage() {
 
         <div style={styles.sourceGrid}>
           {sourceRows.map((row) => {
-            const ready = READY_STATUSES.includes(String(row.status || ""));
+            const ready = READY_STATUSES.includes(
+              String(row.workflow_state || row.status || "")
+            );
             const verified = row.source_evidence_status === "verified";
 
             return (
@@ -1272,7 +1341,9 @@ export default function QuarterWorkspacePage() {
                   <strong>{sourceLabel(row.hmrc_source)}</strong>
 
                   <div style={styles.badgeStack}>
-                    <span style={styles.badge}>{row.status || "not_started"}</span>
+                    <span style={styles.badge}>
+                      {row.workflow_state || row.status || "open"}
+                    </span>
                     <span style={evidenceBadgeStyle(row.source_evidence_status)}>
                       {evidenceLabel(row.source_evidence_status)}
                     </span>
@@ -1302,10 +1373,10 @@ export default function QuarterWorkspacePage() {
                   </div>
 
                   <div>
-                    HMRC Source Link:
+                    Official Obligation:
                     <br />
-                    {row.hmrc_income_source_id
-                      ? String(row.hmrc_income_source_id).slice(0, 8)
+                    {row.official_obligation_id
+                      ? String(row.official_obligation_id).slice(0, 8)
                       : "Not linked"}
                   </div>
 
@@ -1352,11 +1423,12 @@ export default function QuarterWorkspacePage() {
             </div>
 
             <div style={styles.statCard}>
-              <span style={styles.statLabel}>Transactions</span>
+              <span style={styles.statLabel}>Posted Ledger Entries</span>
               <strong style={styles.statValue}>
                 {
-                  filteredTransactions.filter((row) => row.is_deleted !== true)
-                    .length
+                  filteredTransactions.filter(
+                    (row) => row.posting_status === "posted"
+                  ).length
                 }
               </strong>
             </div>
@@ -1367,8 +1439,8 @@ export default function QuarterWorkspacePage() {
               <div>
                 <h2 style={styles.sectionTitle}>Selected HMRC Source Evidence</h2>
                 <p style={styles.muted}>
-                  This quarter workspace is linked to the HMRC detected income
-                  source. Submissions must use this source-level context.
+                  This workspace is linked to the official HMRC obligation,
+                  canonical income source and ledger evidence chain.
                 </p>
               </div>
 
@@ -1401,15 +1473,19 @@ export default function QuarterWorkspacePage() {
               </div>
 
               <div style={styles.evidenceItem}>
-                <span style={styles.evidenceLabel}>HMRC Income Source Link</span>
+                <span style={styles.evidenceLabel}>Canonical Income Source</span>
                 <strong>
-                  {selectedSource.hmrc_income_source_id || "Not linked"}
+                  {selectedSource.income_source_id ||
+                    selectedSource.hmrc_income_source_id ||
+                    "Not linked"}
                 </strong>
               </div>
 
               <div style={styles.evidenceItem}>
-                <span style={styles.evidenceLabel}>Obligation Row</span>
-                <strong>{selectedSource.obligation_id || "Not mapped"}</strong>
+                <span style={styles.evidenceLabel}>Official Obligation</span>
+                <strong>
+                  {selectedSource.official_obligation_id || "Not mapped"}
+                </strong>
               </div>
 
               <div style={styles.evidenceItem}>
@@ -1434,10 +1510,10 @@ export default function QuarterWorkspacePage() {
           <section style={styles.card}>
             <div style={styles.sectionHeader}>
               <div>
-                <h2 style={styles.sectionTitle}>CSV Import</h2>
+                <h2 style={styles.sectionTitle}>CSV Import To Ledger</h2>
                 <p style={styles.muted}>
-                  Import client bookkeeping records into the digital ledger.
-                  Preview, duplicate checks and batch evidence are preserved.
+                  CSV rows now post into ledger_entries with batch evidence and
+                  digital-link metadata.
                 </p>
               </div>
 
@@ -1469,6 +1545,8 @@ export default function QuarterWorkspacePage() {
                 {csvFileName && (
                   <div style={styles.importInfo}>
                     Loaded file: <strong>{csvFileName}</strong>
+                    <br />
+                    File hash: <strong>{csvFileHash || "pending"}</strong>
                   </div>
                 )}
 
@@ -1531,7 +1609,9 @@ export default function QuarterWorkspacePage() {
                           : styles.primaryButton
                       }
                     >
-                      {saving ? "Importing..." : `Import ${csvStats.ready} Rows`}
+                      {saving
+                        ? "Posting..."
+                        : `Post ${csvStats.ready} Rows To Ledger`}
                     </button>
                   </>
                 )}
@@ -1587,10 +1667,10 @@ export default function QuarterWorkspacePage() {
           </section>
 
           <section style={styles.card}>
-            <h2 style={styles.sectionTitle}>CSV Import History</h2>
+            <h2 style={styles.sectionTitle}>Ledger Batch History</h2>
 
             {selectedImportBatches.length === 0 && (
-              <div style={styles.emptyBox}>No CSV import batches yet.</div>
+              <div style={styles.emptyBox}>No ledger import batches yet.</div>
             )}
 
             {selectedImportBatches.length > 0 && (
@@ -1598,9 +1678,9 @@ export default function QuarterWorkspacePage() {
                 <table style={styles.table}>
                   <thead>
                     <tr>
-                      <th style={styles.th}>Imported At</th>
+                      <th style={styles.th}>Created At</th>
                       <th style={styles.th}>File</th>
-                      <th style={styles.th}>Imported</th>
+                      <th style={styles.th}>Rows</th>
                       <th style={styles.th}>Duplicates</th>
                       <th style={styles.th}>Invalid</th>
                       <th style={styles.th}>Status</th>
@@ -1616,35 +1696,47 @@ export default function QuarterWorkspacePage() {
                             ? new Date(batch.created_at).toLocaleString("en-GB")
                             : "-"}
                         </td>
-                        <td style={styles.td}>{batch.file_name}</td>
-                        <td style={styles.td}>{batch.imported_rows || 0}</td>
-                        <td style={styles.td}>{batch.duplicate_rows || 0}</td>
-                        <td style={styles.td}>{batch.invalid_rows || 0}</td>
+                        <td style={styles.td}>
+                          {batch.source_filename || "Manual/Unknown"}
+                        </td>
+                        <td style={styles.td}>
+                          {batch.validation_summary?.imported_rows ||
+                            batch.source_row_count ||
+                            0}
+                        </td>
+                        <td style={styles.td}>
+                          {batch.validation_summary?.duplicate_rows || 0}
+                        </td>
+                        <td style={styles.td}>
+                          {batch.validation_summary?.invalid_rows || 0}
+                        </td>
                         <td style={styles.td}>
                           <span
                             style={
-                              batch.status === "reverted"
+                              batch.batch_status === "superseded"
                                 ? styles.deletedBadge
                                 : styles.readyBadge
                             }
                           >
-                            {batch.status}
+                            {batch.batch_status}
                           </span>
                         </td>
                         <td style={styles.td}>
-                          {batch.status !== "reverted" && !workspaceLocked && (
-                            <button
-                              onClick={() => revertImportBatch(batch)}
-                              style={styles.deleteButton}
-                              disabled={saving}
-                            >
-                              Revert Batch
-                            </button>
-                          )}
+                          {batch.batch_status !== "superseded" &&
+                            !workspaceLocked && (
+                              <button
+                                onClick={() => revertImportBatch(batch)}
+                                style={styles.deleteButton}
+                                disabled={saving}
+                              >
+                                Revert Batch
+                              </button>
+                            )}
 
-                          {batch.status === "reverted" && (
+                          {batch.batch_status === "superseded" && (
                             <span style={styles.issueText}>
-                              {batch.revert_reason || "Reverted"}
+                              {batch.validation_summary?.revert_reason ||
+                                "Superseded"}
                             </span>
                           )}
                         </td>
@@ -1659,10 +1751,10 @@ export default function QuarterWorkspacePage() {
           <section style={styles.card}>
             <div style={styles.sectionHeader}>
               <div>
-                <h2 style={styles.sectionTitle}>Transaction Ledger</h2>
+                <h2 style={styles.sectionTitle}>Ledger Entries</h2>
                 <p style={styles.muted}>
-                  Figures are derived from transaction records. Direct total editing
-                  is intentionally avoided for HMRC digital-link compliance.
+                  Figures are derived from posted ledger entries. Direct total
+                  editing is intentionally avoided for HMRC digital-link compliance.
                 </p>
               </div>
 
@@ -1670,12 +1762,12 @@ export default function QuarterWorkspacePage() {
                 <label style={styles.checkboxLabel}>
                   <input
                     type="checkbox"
-                    checked={showDeletedTransactions}
+                    checked={showExcludedTransactions}
                     onChange={(e) =>
-                      setShowDeletedTransactions(e.target.checked)
+                      setShowExcludedTransactions(e.target.checked)
                     }
                   />
-                  Show deleted
+                  Show excluded
                 </label>
 
                 <button
@@ -1778,8 +1870,8 @@ export default function QuarterWorkspacePage() {
                   {saving
                     ? "Saving..."
                     : editingTransactionId
-                      ? "Update Transaction"
-                      : "Add Transaction"}
+                      ? "Update Ledger Entry"
+                      : "Add Ledger Entry"}
                 </button>
               </div>
             )}
@@ -1795,6 +1887,7 @@ export default function QuarterWorkspacePage() {
                     <th style={styles.th}>Amount</th>
                     <th style={styles.th}>Source</th>
                     <th style={styles.th}>Batch</th>
+                    <th style={styles.th}>Status</th>
                     <th style={styles.th}>Actions</th>
                   </tr>
                 </thead>
@@ -1807,34 +1900,55 @@ export default function QuarterWorkspacePage() {
                       <td style={styles.td}>{row.category}</td>
                       <td style={styles.td}>{row.entry_type}</td>
                       <td style={styles.td}>{money(row.amount)}</td>
-                      <td style={styles.td}>{row.source_type || "manual"}</td>
                       <td style={styles.td}>
-                        {row.import_batch_id
-                          ? String(row.import_batch_id).slice(0, 8)
+                        {row.digital_link_source || "manual"}
+                      </td>
+                      <td style={styles.td}>
+                        {row.ledger_batch_id
+                          ? String(row.ledger_batch_id).slice(0, 8)
                           : "-"}
                       </td>
                       <td style={styles.td}>
+                        <span
+                          style={
+                            row.posting_status === "posted"
+                              ? styles.readyBadge
+                              : styles.deletedBadge
+                          }
+                        >
+                          {row.posting_status}
+                        </span>
+                      </td>
+                      <td style={styles.td}>
                         <div style={styles.actionRow}>
-                          {!workspaceLocked && row.is_deleted !== true && (
-                            <>
-                              <button
-                                onClick={() => editTransaction(row)}
-                                style={styles.smallButton}
-                              >
-                                Edit
-                              </button>
+                          {!workspaceLocked &&
+                            row.locked !== true &&
+                            row.posting_status === "posted" && (
+                              <>
+                                <button
+                                  onClick={() => editTransaction(row)}
+                                  style={styles.smallButton}
+                                >
+                                  Edit
+                                </button>
 
-                              <button
-                                onClick={() => deleteTransaction(row)}
-                                style={styles.deleteButton}
-                              >
-                                Delete
-                              </button>
-                            </>
+                                <button
+                                  onClick={() => deleteTransaction(row)}
+                                  style={styles.deleteButton}
+                                >
+                                  Exclude
+                                </button>
+                              </>
+                            )}
+
+                          {row.posting_status !== "posted" && (
+                            <span style={styles.deletedBadge}>
+                              {row.posting_status}
+                            </span>
                           )}
 
-                          {row.is_deleted === true && (
-                            <span style={styles.deletedBadge}>Deleted</span>
+                          {row.locked === true && (
+                            <span style={styles.deletedBadge}>Locked</span>
                           )}
                         </div>
                       </td>
@@ -1843,8 +1957,8 @@ export default function QuarterWorkspacePage() {
 
                   {filteredTransactions.length === 0 && (
                     <tr>
-                      <td colSpan={8} style={styles.empty}>
-                        No transactions yet.
+                      <td colSpan={9} style={styles.empty}>
+                        No ledger entries yet.
                       </td>
                     </tr>
                   )}
