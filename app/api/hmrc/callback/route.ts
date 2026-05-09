@@ -123,7 +123,26 @@ export async function GET(req: NextRequest) {
       .eq("state", state);
 
     console.log("HMRC STATE USED ERROR:", usedError);
+if (savedState.client_id) {
+  await supabaseAdmin
+    .from("clients")
+    .update({
+      hmrc_connected: true,
+      hmrc_authorisation_status: "authorised",
+      mtd_status: "authorised",
+      hmrc_environment: process.env.HMRC_ENVIRONMENT || "sandbox",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", savedState.client_id)
+    .eq("firm_id", savedState.firm_id);
 
+  return NextResponse.redirect(
+    new URL(
+      `/dashboard/clients/${savedState.client_id}?hmrc=connected`,
+      req.url
+    )
+  );
+}
     return NextResponse.redirect(
       new URL("/dashboard/settings?hmrc=connected", req.url)
     );

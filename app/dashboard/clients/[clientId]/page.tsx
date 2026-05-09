@@ -7,6 +7,22 @@ import { supabase } from "../../../../lib/supabaseClient";
 
 type Row = Record<string, any>;
 
+function formatDate(value: any) {
+  if (!value) return "Not available";
+  try {
+    return new Date(value).toLocaleString("en-GB", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  } catch {
+    return String(value);
+  }
+}
+
+function readable(value: any) {
+  return String(value || "Not set").replaceAll("_", " ");
+}
+
 export default function ClientDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -19,6 +35,8 @@ export default function ClientDetailPage() {
   const [quarters, setQuarters] = useState<Row[]>([]);
   const [quarterLinks, setQuarterLinks] = useState<Row[]>([]);
   const [finalDeclarations, setFinalDeclarations] = useState<Row[]>([]);
+  const [incomeSources, setIncomeSources] = useState<Row[]>([]);
+  const [latestSnapshot, setLatestSnapshot] = useState<Row | null>(null);
   const [submissionLogsCount, setSubmissionLogsCount] = useState(0);
   const [obligationsCount, setObligationsCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -63,10 +81,7 @@ export default function ClientDetailPage() {
       impersonated_firm_id: impersonatedFirmId || null,
     });
 
-    if (error || !data) {
-      throw new Error(error?.message || "No firm access found.");
-    }
-
+    if (error || !data) throw new Error(error?.message || "No firm access found.");
     return String(data);
   };
 
@@ -120,6 +135,26 @@ export default function ClientDetailPage() {
     }
 
     setClient(clientData);
+
+    const { data: incomeSourceData } = await supabase
+      .from("hmrc_income_sources")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("firm_id", activeFirmId)
+      .order("type_of_business", { ascending: true });
+
+    setIncomeSources(incomeSourceData || []);
+
+    const { data: snapshotData } = await supabase
+      .from("hmrc_profile_snapshots")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("firm_id", activeFirmId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    setLatestSnapshot(snapshotData || null);
 
     const { data: yearData, error: yearError } = await supabase
       .from("tax_years")
@@ -221,14 +256,7 @@ export default function ClientDetailPage() {
       let expenses = 0;
 
       yearQuarters.forEach((q) => {
-        income += amount(q, [
-          "income",
-          "income_total",
-          "total_income",
-          "turnover",
-          "sales",
-        ]);
-
+        income += amount(q, ["income", "income_total", "total_income", "turnover", "sales"]);
         expenses += amount(q, [
           "expenses",
           "expense_total",
@@ -261,6 +289,27 @@ export default function ClientDetailPage() {
     );
   }, [yearCards]);
 
+  const incomeSourceSummary = useMemo<Row[]>(() => {
+    return incomeSources.map((source) => {
+      const sourceObligations = quarterLinks.filter((link) => {
+        const raw = link.hmrc_response || {};
+        return (
+          raw.businessId === source.hmrc_business_id ||
+          link.hmrc_business_id === source.hmrc_business_id
+        );
+      });
+
+      return {
+        ...source,
+        linkedObligations: sourceObligations.length,
+      };
+    });
+  }, [incomeSources, quarterLinks]);
+
+  const syncWarnings = Array.isArray(latestSnapshot?.sync_warnings)
+    ? latestSnapshot?.sync_warnings
+    : [];
+
   const linkedRecordsTotal =
     taxYears.length + obligationsCount + finalDeclarations.length + submissionLogsCount;
 
@@ -270,9 +319,52 @@ export default function ClientDetailPage() {
       return;
     }
 
-    router.push(
-      `/dashboard/clients/${clientId}/tax-years/${latestTaxYear.id}/summary`
-    );
+    router.push(`/dashboard/clients/${clientId}/tax-years/${latestTaxYear.id}/summary`);
+  };
+
+  const connectHMRC = async () => {
+    if (!client) return;
+
+    if (isArchived) {
+      setMessage("Archived clients cannot be connected to HMRC. Restore the client first.");
+      return;
+    }
+
+    setSyncing(true);
+    setMessage("Starting HMRC sandbox authorisation...");
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
+      if (!accessToken) {
+        setMessage("Session expired. Please login again.");
+        setSyncing(false);
+        return;
+      }
+
+      const response = await fetch("/api/hmrc/connect", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ clientId }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result?.authUrl) {
+        setMessage(result?.error || "Unable to start HMRC connection.");
+        setSyncing(false);
+        return;
+      }
+
+      window.location.href = result.authUrl;
+    } catch (error: any) {
+      setMessage(error?.message || "Unable to start HMRC connection.");
+      setSyncing(false);
+    }
   };
 
   const syncHMRC = async () => {
@@ -284,7 +376,7 @@ export default function ClientDetailPage() {
     }
 
     setSyncing(true);
-    setMessage("Syncing HMRC obligations...");
+    setMessage("Syncing HMRC obligations, income sources and evidence...");
 
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -308,49 +400,47 @@ export default function ClientDetailPage() {
       const result = await response.json();
 
       if (!response.ok || result?.success === false) {
-  const needsHmrcConnect =
-    result?.connectRequired ||
-    result?.code === "HMRC_CONNECTION_REQUIRED" ||
-    String(result?.error || "")
-      .toLowerCase()
-      .includes("hmrc connection not found") ||
-    String(result?.error || "")
-      .toLowerCase()
-      .includes("no valid hmrc access token");
+        const needsHmrcConnect =
+          result?.connectRequired ||
+          result?.code === "HMRC_CONNECTION_REQUIRED" ||
+          String(result?.error || "").toLowerCase().includes("hmrc connection not found") ||
+          String(result?.error || "").toLowerCase().includes("no valid hmrc access token");
 
-  if (needsHmrcConnect) {
-    setMessage("HMRC connection required. Redirecting to HMRC sandbox...");
-    const connectResponse = await fetch("/api/hmrc/connect", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
+        if (needsHmrcConnect) {
+          setMessage("HMRC connection required. Redirecting to HMRC sandbox...");
+          const connectResponse = await fetch("/api/hmrc/connect", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({ clientId }),
+          });
 
-    const connectResult = await connectResponse.json();
+          const connectResult = await connectResponse.json();
 
-    if (!connectResponse.ok || !connectResult?.authUrl) {
-      setMessage(
-        connectResult?.error ||
-          "Unable to start HMRC connection. Please try from HMRC Connect page."
-      );
-      setSyncing(false);
-      return;
-    }
+          if (!connectResponse.ok || !connectResult?.authUrl) {
+            setMessage(
+              connectResult?.error ||
+                "Unable to start HMRC connection. Please try from HMRC Connect page."
+            );
+            setSyncing(false);
+            return;
+          }
 
-    window.location.href = connectResult.authUrl;
-    return;
-  }
+          window.location.href = connectResult.authUrl;
+          return;
+        }
 
-  setMessage(result?.error || result?.message || "HMRC sync failed.");
-  setSyncing(false);
-  return;
-}
+        setMessage(result?.error || result?.message || "HMRC sync failed.");
+        setSyncing(false);
+        return;
+      }
 
       setMessage(
-        `HMRC obligations synced successfully. Saved: ${
-          result.saved ?? 0
-        }, Failed: ${result.failed ?? 0}, Matched: ${result.matched ?? 0}`
+        `HMRC synced. Obligations saved: ${result.saved ?? 0}, income sources saved: ${
+          result.incomeSourcesSaved ?? 0
+        }, matched: ${result.matched ?? 0}.`
       );
 
       await loadData();
@@ -511,7 +601,6 @@ export default function ClientDetailPage() {
 
           <div style={styles.titleRow}>
             <h1 style={styles.title}>{clientName}</h1>
-
             {isArchived && <span style={styles.archivedBadge}>Archived</span>}
           </div>
 
@@ -531,58 +620,49 @@ export default function ClientDetailPage() {
             <strong>{client?.hmrc_connected ? "Connected" : "Not connected"}</strong>{" "}
             · Authorisation:{" "}
             <strong>{client?.hmrc_authorisation_status || "Not set"}</strong> ·
-            Income source:{" "}
+            Primary source:{" "}
             <strong>{client?.hmrc_income_source_type || "Not set"}</strong>
           </p>
         </div>
 
         <div style={styles.actions}>
-          <Link
-            href={`/dashboard/clients/${clientId}/edit`}
-            style={styles.editButton}
-          >
+          <Link href={`/dashboard/clients/${clientId}/edit`} style={styles.editButton}>
             Edit Client
           </Link>
 
           {isArchived ? (
-            <button
-              onClick={restoreClient}
-              disabled={actionLoading}
-              style={styles.restoreButton}
-            >
+            <button onClick={restoreClient} disabled={actionLoading} style={styles.restoreButton}>
               {actionLoading ? "Working..." : "Restore"}
             </button>
           ) : (
-            <button
-              onClick={archiveClient}
-              disabled={actionLoading}
-              style={styles.archiveButton}
-            >
+            <button onClick={archiveClient} disabled={actionLoading} style={styles.archiveButton}>
               {actionLoading ? "Working..." : "Archive"}
             </button>
           )}
 
-          <button
-            onClick={deleteClient}
-            disabled={actionLoading}
-            style={styles.deleteButton}
-          >
+          <button onClick={deleteClient} disabled={actionLoading} style={styles.deleteButton}>
             Delete
           </button>
 
-          <button
-            onClick={syncHMRC}
-            disabled={syncing || actionLoading || isArchived}
-            style={styles.secondaryButton}
-          >
-            {syncing ? "Syncing..." : "Sync HMRC"}
-          </button>
+          {client?.hmrc_connected ? (
+            <button
+              onClick={syncHMRC}
+              disabled={syncing || actionLoading || isArchived}
+              style={styles.secondaryButton}
+            >
+              {syncing ? "Syncing..." : "Sync HMRC"}
+            </button>
+          ) : (
+            <button
+              onClick={connectHMRC}
+              disabled={syncing || actionLoading || isArchived}
+              style={styles.secondaryButton}
+            >
+              {syncing ? "Connecting..." : "Connect HMRC"}
+            </button>
+          )}
 
-          <button
-            onClick={openLatestMTDYear}
-            disabled={isArchived}
-            style={styles.primaryButton}
-          >
+          <button onClick={openLatestMTDYear} disabled={isArchived} style={styles.primaryButton}>
             Open latest MTD year
           </button>
         </div>
@@ -590,73 +670,68 @@ export default function ClientDetailPage() {
 
       {isArchived && (
         <div style={styles.archiveNotice}>
-          This client is archived. Compliance records are preserved, but HMRC sync
-          and MTD workflow actions are disabled until restored.
+          This client is archived. Compliance records are preserved, but HMRC sync and
+          MTD workflow actions are disabled until restored.
         </div>
       )}
 
       {message && <div style={styles.message}>{message}</div>}
 
       <section style={styles.statsGrid}>
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Tax years</span>
-          <strong style={styles.statValue}>{taxYears.length}</strong>
+        <StatCard label="Tax years" value={taxYears.length} />
+        <StatCard label="Quarters" value={quarters.length} />
+        <StatCard label="Quarter links" value={quarterLinks.length} />
+        <StatCard label="Linked records" value={linkedRecordsTotal} />
+        <StatCard label="Total profit" value={money(totals.profit)} />
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>HMRC Evidence & Income Sources</h2>
+
+        <div style={styles.evidenceGrid}>
+          <div style={styles.evidenceBox}>
+            <span style={styles.infoLabel}>Latest snapshot status</span>
+            <strong>{readable(latestSnapshot?.sync_status)}</strong>
+            <p style={styles.muted}>Created: {formatDate(latestSnapshot?.created_at)}</p>
+          </div>
+
+          <div style={styles.evidenceBox}>
+            <span style={styles.infoLabel}>Environment</span>
+            <strong>{latestSnapshot?.environment || client.hmrc_environment || "sandbox"}</strong>
+            <p style={styles.muted}>Source: {latestSnapshot?.source || "Not synced"}</p>
+          </div>
+
+          <div style={styles.evidenceBox}>
+            <span style={styles.infoLabel}>Detected income sources</span>
+            <strong>{incomeSources.length}</strong>
+            <p style={styles.muted}>Primary: {client.hmrc_business_id || "Not stored"}</p>
+          </div>
         </div>
 
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Quarters</span>
-          <strong style={styles.statValue}>{quarters.length}</strong>
-        </div>
+        {syncWarnings.length > 0 && (
+          <div style={styles.warningBox}>
+            <strong>Profile warnings</strong>
+            <ul style={styles.warningList}>
+              {syncWarnings.map((warning: string, index: number) => (
+                <li key={`${warning}-${index}`}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Quarter links</span>
-          <strong style={styles.statValue}>{quarterLinks.length}</strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Linked records</span>
-          <strong style={styles.statValue}>{linkedRecordsTotal}</strong>
-        </div>
-
-        <div style={styles.statCard}>
-          <span style={styles.statLabel}>Total profit</span>
-          <strong style={styles.statValue}>{money(totals.profit)}</strong>
-        </div>
+        
       </section>
 
       <section style={styles.card}>
         <h2 style={styles.sectionTitle}>Client Management</h2>
 
         <div style={styles.infoGrid}>
-          <div>
-            <span style={styles.infoLabel}>Business name</span>
-            <strong>{client.business_name || "Not added"}</strong>
-          </div>
-
-          <div>
-            <span style={styles.infoLabel}>MTD Income Tax ID</span>
-            <strong>{client.mtd_income_tax_id || "Not added"}</strong>
-          </div>
-
-          <div>
-            <span style={styles.infoLabel}>VAT number</span>
-            <strong>{client.vat_registration_number || "Not added"}</strong>
-          </div>
-
-          <div>
-            <span style={styles.infoLabel}>EORI number</span>
-            <strong>{client.eori_number || "Not added"}</strong>
-          </div>
-
-          <div>
-            <span style={styles.infoLabel}>Postcode</span>
-            <strong>{client.postcode || "Not added"}</strong>
-          </div>
-
-          <div>
-            <span style={styles.infoLabel}>Archive status</span>
-            <strong>{isArchived ? "Archived" : "Active"}</strong>
-          </div>
+          <Info label="Business name" value={client.business_name || "Not added"} />
+          <Info label="MTD Income Tax ID" value={client.mtd_income_tax_id || "Not added"} />
+          <Info label="VAT number" value={client.vat_registration_number || "Not added"} />
+          <Info label="EORI number" value={client.eori_number || "Not added"} />
+          <Info label="Postcode" value={client.postcode || "Not added"} />
+          <Info label="Archive status" value={isArchived ? "Archived" : "Active"} />
         </div>
       </section>
 
@@ -677,7 +752,6 @@ export default function ClientDetailPage() {
                 <div key={item.year.id} style={styles.yearCard}>
                   <div>
                     <h3 style={styles.yearTitle}>{item.year.year_label}</h3>
-
                     <p style={styles.muted}>
                       Quarters: {item.quarters.length} · Quarter links:{" "}
                       {item.quarterLinks.length} · Final declaration:{" "}
@@ -713,6 +787,24 @@ export default function ClientDetailPage() {
         )}
       </section>
     </main>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: any }) {
+  return (
+    <div style={styles.statCard}>
+      <span style={styles.statLabel}>{label}</span>
+      <strong style={styles.statValue}>{value}</strong>
+    </div>
+  );
+}
+
+function Info({ label, value }: { label: string; value: any }) {
+  return (
+    <div>
+      <span style={styles.infoLabel}>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -886,6 +978,75 @@ const styles: Record<string, React.CSSProperties> = {
     display: "grid",
     gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
     gap: "16px",
+  },
+  evidenceGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "16px",
+    marginBottom: "16px",
+  },
+  evidenceBox: {
+    border: "1px solid #e2e8f0",
+    background: "#f8fafc",
+    borderRadius: "16px",
+    padding: "16px",
+  },
+  warningBox: {
+    background: "#fffbeb",
+    border: "1px solid #fde68a",
+    color: "#92400e",
+    borderRadius: "16px",
+    padding: "14px 16px",
+    marginBottom: "16px",
+  },
+  warningList: {
+    margin: "8px 0 0",
+    paddingLeft: "20px",
+  },
+  sourceGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+    gap: "14px",
+  },
+  sourceCard: {
+    border: "1px solid #dbeafe",
+    background: "#eff6ff",
+    borderRadius: "18px",
+    padding: "16px",
+  },
+  sourceHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "12px",
+    alignItems: "center",
+  },
+  sourceId: {
+    margin: "8px 0 14px",
+    color: "#1e3a8a",
+    fontWeight: 900,
+    fontSize: "14px",
+    wordBreak: "break-word",
+  },
+  sourceMetaGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: "10px",
+  },
+  greenPill: {
+    background: "#dcfce7",
+    color: "#166534",
+    borderRadius: "999px",
+    padding: "5px 9px",
+    fontSize: "12px",
+    fontWeight: 900,
+  },
+  greyPill: {
+    background: "#e2e8f0",
+    color: "#475569",
+    borderRadius: "999px",
+    padding: "5px 9px",
+    fontSize: "12px",
+    fontWeight: 900,
   },
   infoLabel: {
     display: "block",

@@ -8,6 +8,8 @@ import {
 
 export const dynamic = "force-dynamic";
 
+type Row = Record<string, any>;
+
 function cleanNino(nino: string) {
   return String(nino || "").replace(/\s+/g, "").toUpperCase();
 }
@@ -31,7 +33,7 @@ function getTaxYearLabelFromEndDate(endDate: string) {
   return `${startYear}-${String(endYear).slice(-2)}`;
 }
 
-function getClientDisplayName(client: any) {
+function getClientDisplayName(client: Row) {
   return (
     `${client?.first_name || ""} ${client?.last_name || ""}`.trim() ||
     client?.business_name ||
@@ -41,32 +43,32 @@ function getClientDisplayName(client: any) {
   );
 }
 
-function getFirstBusiness(hmrcData: any) {
-  const businesses = Array.isArray(hmrcData?.obligations)
-    ? hmrcData.obligations
-    : [];
-
-  return businesses[0] || null;
+function getObligationBusinesses(hmrcData: Row) {
+  return Array.isArray(hmrcData?.obligations) ? hmrcData.obligations : [];
 }
 
-function buildProfileWarnings(client: any, hmrcData: any) {
+function getPrimaryBusiness(hmrcData: Row) {
+  return getObligationBusinesses(hmrcData)[0] || null;
+}
+
+function buildProfileWarnings(client: Row, hmrcData: Row) {
   const warnings: string[] = [];
-  const firstBusiness = getFirstBusiness(hmrcData);
+  const businesses = getObligationBusinesses(hmrcData);
 
   if (!client?.nino) warnings.push("Client NINO is missing.");
   if (!client?.utr) warnings.push("Client UTR is missing.");
   if (!client?.mtd_income_tax_id) {
     warnings.push("MTD Income Tax ID is not stored on the client profile.");
   }
-  if (!firstBusiness?.businessId && !client?.hmrc_business_id) {
-    warnings.push("HMRC business/income source ID was not detected.");
+
+  if (businesses.length === 0) {
+    warnings.push("No HMRC income sources were detected from obligations.");
   }
-  if (!firstBusiness?.typeOfBusiness && !client?.hmrc_income_source_type) {
-    warnings.push("HMRC income source type was not detected.");
-  }
+
   if (!client?.business_name) {
     warnings.push("Business/full name is not stored on the client profile.");
   }
+
   if (!client?.postcode) {
     warnings.push("Postcode is not stored on the client profile.");
   }
@@ -74,22 +76,88 @@ function buildProfileWarnings(client: any, hmrcData: any) {
   return warnings;
 }
 
+async function saveIncomeSources(params: {
+  firmId: string;
+  clientId: string;
+  hmrcData: Row;
+  correlationId: string | null;
+  testScenario: string;
+}) {
+  const { firmId, clientId, hmrcData, correlationId, testScenario } = params;
+
+  const businesses = getObligationBusinesses(hmrcData);
+  let saved = 0;
+  let failed = 0;
+
+  for (const business of businesses) {
+    const businessId = business?.businessId;
+    const typeOfBusiness = business?.typeOfBusiness;
+
+    if (!businessId || !typeOfBusiness) {
+      failed++;
+      continue;
+    }
+
+    const payload = {
+      firm_id: firmId,
+      client_id: clientId,
+      hmrc_business_id: businessId,
+      type_of_business: typeOfBusiness,
+      source_name: typeOfBusiness,
+      active: true,
+      last_seen_at: new Date().toISOString(),
+      raw_source: {
+        ...business,
+        correlationId,
+        testScenario,
+      },
+      sync_source: "hmrc_obligations_sync",
+      environment: process.env.HMRC_ENVIRONMENT || "sandbox",
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabaseAdmin
+      .from("hmrc_income_sources")
+      .upsert(payload, {
+        onConflict: "client_id,hmrc_business_id,type_of_business",
+      });
+
+    if (error) {
+      failed++;
+      console.error("HMRC income source save failed:", error);
+    } else {
+      saved++;
+    }
+  }
+
+  return { saved, failed };
+}
+
 async function saveHmrcProfileSnapshot(params: {
-  client: any;
-  user: any;
-  hmrcData: any;
+  client: Row;
+  user: Row;
+  hmrcData: Row;
   correlationId: string | null;
   testScenario: string;
 }) {
   const { client, user, hmrcData, correlationId, testScenario } = params;
 
-  const firstBusiness = getFirstBusiness(hmrcData);
+  const businesses = getObligationBusinesses(hmrcData);
+  const primaryBusiness = getPrimaryBusiness(hmrcData);
 
-  const detectedBusinessId =
-    firstBusiness?.businessId || client.hmrc_business_id || null;
+  const detectedIncomeSources = businesses.map((business: Row) => ({
+    businessId: business?.businessId || null,
+    typeOfBusiness: business?.typeOfBusiness || null,
+    obligationCount: Array.isArray(business?.obligationDetails)
+      ? business.obligationDetails.length
+      : 0,
+  }));
 
-  const detectedIncomeSourceType =
-    firstBusiness?.typeOfBusiness || client.hmrc_income_source_type || null;
+  const primaryBusinessId =
+    primaryBusiness?.businessId || client.hmrc_business_id || null;
+
+  const primaryIncomeSourceType =
+    primaryBusiness?.typeOfBusiness || client.hmrc_income_source_type || null;
 
   const warnings = buildProfileWarnings(client, hmrcData);
 
@@ -97,11 +165,10 @@ async function saveHmrcProfileSnapshot(params: {
     source: "hmrc_obligations_sync",
     testScenario,
     correlationId,
-    obligationsBusinessCount: Array.isArray(hmrcData?.obligations)
-      ? hmrcData.obligations.length
-      : 0,
-    detectedBusinessId,
-    detectedIncomeSourceType,
+    obligationsBusinessCount: businesses.length,
+    detectedIncomeSources,
+    primaryBusinessId,
+    primaryIncomeSourceType,
     clientProfileAtSync: {
       id: client.id,
       firm_id: client.firm_id,
@@ -154,42 +221,47 @@ async function saveHmrcProfileSnapshot(params: {
     raw_identity: {
       source: "client_profile_plus_hmrc_obligations",
       correlationId,
+      detectedIncomeSources,
     },
     raw_vat_profile: {
       vat_registration_number: client.vat_registration_number || null,
       vat_registration_date: client.vat_registration_date || null,
       eori_number: client.eori_number || null,
       note:
-        "VAT/EORI values are preserved from client/test-user profile. Dedicated VAT API hydration should be added when VAT scopes/endpoints are enabled.",
+        "VAT/EORI values are preserved from client/test-user profile. Dedicated VAT API hydration should be added only when VAT scopes/endpoints are enabled.",
     },
     raw_itsa_profile: {
-      businessId: detectedBusinessId,
-      typeOfBusiness: detectedIncomeSourceType,
+      primaryBusinessId,
+      primaryIncomeSourceType,
+      detectedIncomeSources,
       mtdIncomeTaxId: client.mtd_income_tax_id || null,
-      obligations: hmrcData?.obligations || [],
+      obligations: businesses,
     },
 
     sync_status: warnings.length > 0 ? "synced_with_warnings" : "synced",
     sync_warnings: warnings,
     mismatch_report: {
       warnings,
-      detectedBusinessId,
-      detectedIncomeSourceType,
+      primaryBusinessId,
+      primaryIncomeSourceType,
+      detectedIncomeSources,
     },
 
     synced_by: user.id,
     synced_by_email: user.email || null,
   });
 
-  const updatePayload: Record<string, any> = {
+  const updatePayload: Row = {
     hmrc_connected: true,
-    hmrc_authorisation_status: "connected",
+    hmrc_authorisation_status: "authorised",
+    mtd_status: "authorised",
+    hmrc_environment: process.env.HMRC_ENVIRONMENT || "sandbox",
     updated_at: new Date().toISOString(),
   };
 
-  if (detectedBusinessId) updatePayload.hmrc_business_id = detectedBusinessId;
-  if (detectedIncomeSourceType) {
-    updatePayload.hmrc_income_source_type = detectedIncomeSourceType;
+  if (primaryBusinessId) updatePayload.hmrc_business_id = primaryBusinessId;
+  if (primaryIncomeSourceType) {
+    updatePayload.hmrc_income_source_type = primaryIncomeSourceType;
   }
 
   await supabaseAdmin
@@ -200,15 +272,16 @@ async function saveHmrcProfileSnapshot(params: {
 
   return {
     warnings,
-    detectedBusinessId,
-    detectedIncomeSourceType,
+    primaryBusinessId,
+    primaryIncomeSourceType,
+    detectedIncomeSources,
   };
 }
 
 async function saveObligations(params: {
   firmId: string;
   clientId: string;
-  hmrcData: any;
+  hmrcData: Row;
   correlationId: string | null;
 }) {
   const { firmId, clientId, hmrcData, correlationId } = params;
@@ -216,30 +289,36 @@ async function saveObligations(params: {
   let saved = 0;
   let failed = 0;
 
-  for (const business of hmrcData.obligations || []) {
-    const businessId = business.businessId;
-    const typeOfBusiness = business.typeOfBusiness;
+  for (const business of getObligationBusinesses(hmrcData)) {
+    const businessId = business?.businessId;
+    const typeOfBusiness = business?.typeOfBusiness;
+
+    if (!businessId || !typeOfBusiness) {
+      failed++;
+      continue;
+    }
 
     for (const obligation of business.obligationDetails || []) {
       const periodKey =
-        `${typeOfBusiness}_` +
-        `${businessId}_` +
-        `${obligation.periodStartDate}_` +
-        `${obligation.periodEndDate}`;
+        `${typeOfBusiness}_${businessId}_${obligation.periodStartDate}_${obligation.periodEndDate}`;
 
       const payload = {
         client_id: clientId,
         firm_id: firmId,
+
+        hmrc_business_id: businessId,
+        hmrc_business_type: typeOfBusiness,
+
         period_key: periodKey,
         start_date: obligation.periodStartDate,
         end_date: obligation.periodEndDate,
         due_date: obligation.dueDate,
         status: obligation.status,
+
         hmrc_source: typeOfBusiness,
         hmrc_obligation_id:
-          `${businessId}_` +
-          `${obligation.periodStartDate}_` +
-          `${obligation.periodEndDate}`,
+          `${businessId}_${obligation.periodStartDate}_${obligation.periodEndDate}`,
+
         hmrc_response: {
           ...obligation,
           businessId,
@@ -354,7 +433,7 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           error:
-            "HMRC connection not found. Please connect this firm to HMRC first.",
+            "HMRC connection not found. Please connect this firm/client to HMRC first.",
           code: "HMRC_CONNECTION_REQUIRED",
           connectRequired: true,
           firmId: client.firm_id,
@@ -420,6 +499,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const incomeSourceSync = await saveIncomeSources({
+      firmId: client.firm_id,
+      clientId: client.id,
+      hmrcData: data,
+      correlationId,
+      testScenario,
+    });
+
     const { saved, failed } = await saveObligations({
       firmId: client.firm_id,
       clientId: client.id,
@@ -444,7 +531,7 @@ export async function POST(req: NextRequest) {
 
     const detectedTaxYears = Array.from(
       new Set(
-        (data.obligations || []).flatMap((business: any) =>
+        getObligationBusinesses(data).flatMap((business: any) =>
           (business.obligationDetails || []).map((obligation: any) =>
             getTaxYearLabelFromEndDate(obligation.periodEndDate)
           )
@@ -454,14 +541,22 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: "HMRC obligations synced and client workspace prepared.",
+      message:
+        "HMRC obligations, income sources and client workspace synced successfully.",
       firmId: client.firm_id,
       clientId: client.id,
       clientName: getClientDisplayName(client),
       nino,
+
       saved,
       failed,
+
+      incomeSourcesSaved: incomeSourceSync.saved,
+      incomeSourcesFailed: incomeSourceSync.failed,
+
       detectedTaxYears,
+      detectedIncomeSources: profileSync.detectedIncomeSources,
+
       matched: matchResult?.matched ?? matchResult?.[0]?.matched ?? 0,
       createdTaxYears:
         provisionResult?.created_tax_years ??
@@ -471,6 +566,7 @@ export async function POST(req: NextRequest) {
         provisionResult?.created_quarters_attempted ??
         provisionResult?.[0]?.created_quarters_attempted ??
         0,
+
       provisionWarning: provisionErrorMessage,
       matchWarning: matchErrorMessage,
       correlationId,

@@ -17,10 +17,7 @@ export async function POST(req: NextRequest) {
     const token = authHeader?.replace("Bearer ", "");
 
     if (!token) {
-      return NextResponse.json(
-        { error: "Missing auth token" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
     }
 
     const {
@@ -29,28 +26,46 @@ export async function POST(req: NextRequest) {
     } = await supabaseAdmin.auth.getUser(token);
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Invalid user session" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Invalid user session" }, { status: 401 });
     }
 
-    const { data: firmUser, error: firmError } = await supabaseAdmin
-      .from("firm_users")
-      .select("firm_id")
-      .eq("user_id", user.id)
-      .eq("status", "active")
-      .limit(1)
-      .maybeSingle();
+    const body = await req.json().catch(() => ({}));
+    const clientId = body?.clientId ? String(body.clientId) : null;
 
-    if (firmError || !firmUser?.firm_id) {
+    if (!clientId) {
       return NextResponse.json(
-        { error: "Firm not found for user." },
+        { error: "Client ID is required for client HMRC authorisation." },
         { status: 400 }
       );
     }
 
-    const resolvedFirmId = firmUser.firm_id;
+    const { data: client, error: clientError } = await supabaseAdmin
+      .from("clients")
+      .select("id, firm_id")
+      .eq("id", clientId)
+      .maybeSingle();
+
+    if (clientError || !client?.firm_id) {
+      return NextResponse.json(
+        { error: "Client not found for HMRC connection." },
+        { status: 404 }
+      );
+    }
+
+    const { data: firmUser, error: firmUserError } = await supabaseAdmin
+      .from("firm_users")
+      .select("id")
+      .eq("user_id", user.id)
+      .eq("firm_id", client.firm_id)
+      .eq("status", "active")
+      .maybeSingle();
+
+    if (firmUserError || !firmUser) {
+      return NextResponse.json(
+        { error: "You do not have access to this client's firm workspace." },
+        { status: 403 }
+      );
+    }
 
     const state = crypto.randomBytes(32).toString("hex");
 
@@ -58,16 +73,15 @@ export async function POST(req: NextRequest) {
       .from("hmrc_oauth_states")
       .insert({
         state,
-        firm_id: resolvedFirmId,
+        firm_id: client.firm_id,
         user_id: user.id,
+        client_id: clientId,
         expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
       });
 
     if (stateError) {
-      console.error("OAuth state insert error:", stateError);
-
       return NextResponse.json(
-        { error: "Failed to create OAuth state" },
+        { error: "Failed to create OAuth state", details: stateError.message },
         { status: 500 }
       );
     }
@@ -77,24 +91,17 @@ export async function POST(req: NextRequest) {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("client_id", process.env.HMRC_CLIENT_ID!);
     authUrl.searchParams.set("redirect_uri", process.env.HMRC_REDIRECT_URI!);
-    authUrl.searchParams.set(
-      "scope",
-      "read:self-assessment write:self-assessment"
-    );
+    authUrl.searchParams.set("scope", "read:self-assessment write:self-assessment");
     authUrl.searchParams.set("state", state);
 
     return NextResponse.json({
       authUrl: authUrl.toString(),
-      firmId: resolvedFirmId,
-      adminMode: false,
+      firmId: client.firm_id,
+      clientId,
     });
   } catch (error: any) {
-    console.error("HMRC connect error:", error);
-
     return NextResponse.json(
-      {
-        error: error?.message || "Internal server error",
-      },
+      { error: error?.message || "Internal server error" },
       { status: 500 }
     );
   }
