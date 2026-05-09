@@ -28,10 +28,19 @@ function safeJsonParse(text: string) {
 }
 
 function canonicalSourceType(value: string | null | undefined) {
-  return String(value || "")
+  const normalised = String(value || "")
     .trim()
     .toLowerCase()
-    .replace(/-/g, "_");
+    .replace(/-/g, "_")
+    .replace(/\s+/g, "_");
+
+  if (normalised === "self_employment") return "self_employment";
+  if (normalised === "uk_property") return "uk_property";
+  if (normalised === "foreign_property") return "foreign_property";
+  if (normalised === "foreign_income") return "foreign_income";
+  if (normalised === "partnership") return "partnership";
+
+  return normalised || "other";
 }
 
 function getTaxYearLabelFromEndDate(endDate: string) {
@@ -83,62 +92,276 @@ function buildProfileWarnings(client: Row, hmrcData: Row) {
   return warnings;
 }
 
+async function writeIncomeSourceAudit(params: {
+  incomeSourceId: string;
+  firmId: string;
+  clientId: string;
+  action:
+    | "created"
+    | "updated"
+    | "hmrc_matched"
+    | "manually_confirmed"
+    | "status_changed"
+    | "conflict_detected"
+    | "closed"
+    | "metadata_updated";
+  fromValues?: Row | null;
+  toValues?: Row | null;
+  performedBy?: string | null;
+  performedRole?: string | null;
+  reason?: string | null;
+}) {
+  const { error } = await supabaseAdmin.from("hmrc_income_source_audit").insert({
+    income_source_id: params.incomeSourceId,
+    firm_id: params.firmId,
+    client_id: params.clientId,
+    action: params.action,
+    from_values: params.fromValues || null,
+    to_values: params.toValues || null,
+    performed_by: params.performedBy || null,
+    performed_role: params.performedRole || null,
+    reason: params.reason || null,
+  });
+
+  if (error) {
+    console.error("HMRC income source audit write failed:", error);
+  }
+}
+
+async function resolveCanonicalIncomeSource(params: {
+  firmId: string;
+  clientId: string;
+  business: Row;
+  correlationId: string | null;
+  testScenario: string;
+  performedBy?: string | null;
+}) {
+  const {
+    firmId,
+    clientId,
+    business,
+    correlationId,
+    testScenario,
+    performedBy,
+  } = params;
+
+  const businessId = business?.businessId;
+  const typeOfBusiness = business?.typeOfBusiness;
+  const sourceType = canonicalSourceType(typeOfBusiness);
+
+  if (!businessId || !typeOfBusiness) {
+    return {
+      incomeSource: null as Row | null,
+      created: false,
+      updated: false,
+      error: "Missing HMRC businessId or typeOfBusiness.",
+    };
+  }
+
+  const now = new Date().toISOString();
+
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from("hmrc_income_sources")
+    .select("*")
+    .eq("firm_id", firmId)
+    .eq("client_id", clientId)
+    .eq("hmrc_business_id", businessId)
+    .eq("canonical_source_type", sourceType)
+    .maybeSingle();
+
+  if (existingError) {
+    console.error("Canonical income source lookup failed:", existingError);
+    return {
+      incomeSource: null as Row | null,
+      created: false,
+      updated: false,
+      error: existingError.message,
+    };
+  }
+
+  const payload: Row = {
+    firm_id: firmId,
+    client_id: clientId,
+
+    hmrc_business_id: businessId,
+    hmrc_income_source_id: existing?.hmrc_income_source_id || null,
+
+    type_of_business: sourceType,
+    canonical_source_type: sourceType,
+    source_name: typeOfBusiness,
+    display_name:
+      existing?.display_name ||
+      business?.tradingName ||
+      business?.businessName ||
+      typeOfBusiness,
+
+    trading_name:
+      business?.tradingName || business?.businessName || existing?.trading_name || null,
+    business_description:
+      business?.businessDescription || existing?.business_description || null,
+
+    accounting_type: business?.accountingType || existing?.accounting_type || "unknown",
+    active: true,
+
+    source_status: "hmrc_matched",
+    hmrc_evidence_status: "verified",
+    first_seen_from: existing?.first_seen_from || "hmrc_obligations",
+    last_seen_at: now,
+    last_hmrc_sync_at: now,
+
+    raw_source: {
+      ...business,
+      correlationId,
+      testScenario,
+    },
+    sync_source: "hmrc_obligations_sync",
+    environment: process.env.HMRC_ENVIRONMENT || "sandbox",
+
+    metadata: {
+      ...(existing?.metadata || {}),
+      latest_sync: {
+        source: "hmrc_obligations_sync",
+        synced_at: now,
+        correlationId,
+        testScenario,
+        businessId,
+        typeOfBusiness,
+        canonicalSourceType: sourceType,
+      },
+    },
+
+    updated_at: now,
+  };
+
+  if (existing?.id) {
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("hmrc_income_sources")
+      .update(payload)
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+
+    if (updateError) {
+      console.error("Canonical income source update failed:", updateError);
+      return {
+        incomeSource: null as Row | null,
+        created: false,
+        updated: false,
+        error: updateError.message,
+      };
+    }
+
+    await writeIncomeSourceAudit({
+      incomeSourceId: existing.id,
+      firmId,
+      clientId,
+      action: "hmrc_matched",
+      fromValues: {
+        source_status: existing.source_status,
+        hmrc_evidence_status: existing.hmrc_evidence_status,
+        last_hmrc_sync_at: existing.last_hmrc_sync_at,
+      },
+      toValues: {
+        source_status: "hmrc_matched",
+        hmrc_evidence_status: "verified",
+        last_hmrc_sync_at: now,
+      },
+      performedBy,
+      reason: "HMRC obligations sync refreshed canonical income source.",
+    });
+
+    return {
+      incomeSource: updated,
+      created: false,
+      updated: true,
+      error: null,
+    };
+  }
+
+  const { data: inserted, error: insertError } = await supabaseAdmin
+    .from("hmrc_income_sources")
+    .insert({
+      ...payload,
+      created_at: now,
+    })
+    .select("*")
+    .single();
+
+  if (insertError) {
+    console.error("Canonical income source insert failed:", insertError);
+    return {
+      incomeSource: null as Row | null,
+      created: false,
+      updated: false,
+      error: insertError.message,
+    };
+  }
+
+  await writeIncomeSourceAudit({
+    incomeSourceId: inserted.id,
+    firmId,
+    clientId,
+    action: "created",
+    fromValues: null,
+    toValues: {
+      hmrc_business_id: businessId,
+      canonical_source_type: sourceType,
+      source_status: "hmrc_matched",
+      hmrc_evidence_status: "verified",
+    },
+    performedBy,
+    reason: "HMRC obligations sync created canonical income source.",
+  });
+
+  return {
+    incomeSource: inserted,
+    created: true,
+    updated: false,
+    error: null,
+  };
+}
+
 async function saveIncomeSources(params: {
   firmId: string;
   clientId: string;
   hmrcData: Row;
   correlationId: string | null;
   testScenario: string;
+  performedBy?: string | null;
 }) {
-  const { firmId, clientId, hmrcData, correlationId, testScenario } = params;
+  const { firmId, clientId, hmrcData, correlationId, testScenario, performedBy } =
+    params;
 
   const businesses = getObligationBusinesses(hmrcData);
   let saved = 0;
   let failed = 0;
+  let created = 0;
+  let updated = 0;
+  const sourceMap = new Map<string, Row>();
 
   for (const business of businesses) {
-    const businessId = business?.businessId;
-    const typeOfBusiness = business?.typeOfBusiness;
+    const result = await resolveCanonicalIncomeSource({
+      firmId,
+      clientId,
+      business,
+      correlationId,
+      testScenario,
+      performedBy,
+    });
 
-    if (!businessId || !typeOfBusiness) {
+    if (result.error || !result.incomeSource?.id) {
       failed++;
       continue;
     }
 
-    const payload = {
-      firm_id: firmId,
-      client_id: clientId,
-      hmrc_business_id: businessId,
-      type_of_business: canonicalSourceType(typeOfBusiness),
-      canonical_source_type: canonicalSourceType(typeOfBusiness),
-      source_name: typeOfBusiness,
-      active: true,
-      last_seen_at: new Date().toISOString(),
-      raw_source: {
-        ...business,
-        correlationId,
-        testScenario,
-      },
-      sync_source: "hmrc_obligations_sync",
-      environment: process.env.HMRC_ENVIRONMENT || "sandbox",
-      updated_at: new Date().toISOString(),
-    };
+    saved++;
+    if (result.created) created++;
+    if (result.updated) updated++;
 
-    const { error } = await supabaseAdmin
-      .from("hmrc_income_sources")
-      .upsert(payload, {
-        onConflict: "client_id,hmrc_business_id,type_of_business",
-      });
-
-    if (error) {
-      failed++;
-      console.error("HMRC income source save failed:", error);
-    } else {
-      saved++;
-    }
+    sourceMap.set(business.businessId, result.incomeSource);
   }
 
-  return { saved, failed };
+  return { saved, failed, created, updated, sourceMap };
 }
 
 async function saveHmrcProfileSnapshot(params: {
@@ -292,8 +515,9 @@ async function saveObligations(params: {
   clientId: string;
   hmrcData: Row;
   correlationId: string | null;
+  sourceMap: Map<string, Row>;
 }) {
-  const { firmId, clientId, hmrcData, correlationId } = params;
+  const { firmId, clientId, hmrcData, correlationId, sourceMap } = params;
 
   let saved = 0;
   let failed = 0;
@@ -301,8 +525,9 @@ async function saveObligations(params: {
   for (const business of getObligationBusinesses(hmrcData)) {
     const businessId = business?.businessId;
     const typeOfBusiness = business?.typeOfBusiness;
+    const incomeSource = businessId ? sourceMap.get(businessId) : null;
 
-    if (!businessId || !typeOfBusiness) {
+    if (!businessId || !typeOfBusiness || !incomeSource?.id) {
       failed++;
       continue;
     }
@@ -317,6 +542,7 @@ async function saveObligations(params: {
 
         hmrc_business_id: businessId,
         hmrc_business_type: typeOfBusiness,
+        hmrc_income_source_id: incomeSource.id,
 
         period_key: periodKey,
         start_date: obligation.periodStartDate,
@@ -332,7 +558,9 @@ async function saveObligations(params: {
           ...obligation,
           businessId,
           typeOfBusiness,
-          canonicalSourceType: canonicalSourceType(typeOfBusiness),
+          canonicalSourceType: incomeSource.canonical_source_type,
+          canonicalIncomeSourceId: incomeSource.id,
+          sourceEvidenceStatus: incomeSource.hmrc_evidence_status,
           correlationId,
         },
       };
@@ -405,18 +633,21 @@ async function provisionQuarterIncomeSources(params: {
   const { data: obligations, error: obligationsError } = await supabaseAdmin
     .from("obligations")
     .select(
-      "id, client_id, firm_id, hmrc_source, hmrc_business_id, hmrc_business_type, start_date, end_date, status"
+      "id, client_id, firm_id, hmrc_source, hmrc_business_id, hmrc_business_type, hmrc_income_source_id, start_date, end_date, status"
     )
     .eq("client_id", clientId)
     .eq("firm_id", firmId)
-    .not("hmrc_business_id", "is", null)
     .order("start_date", { ascending: true });
 
   if (obligationsError) {
-    console.error("Quarter income source provisioning obligations load failed:", obligationsError);
+    console.error(
+      "Quarter income source provisioning obligations load failed:",
+      obligationsError
+    );
     return {
       created: 0,
       skipped: 0,
+      updated: 0,
       failed: 0,
       error: obligationsError.message,
     };
@@ -424,10 +655,18 @@ async function provisionQuarterIncomeSources(params: {
 
   let created = 0;
   let skipped = 0;
+  let updated = 0;
   let failed = 0;
 
   for (const obligation of obligations || []) {
-    const sourceType = canonicalSourceType(obligation.hmrc_business_type || obligation.hmrc_source);
+    if (!obligation.hmrc_income_source_id) {
+      skipped++;
+      continue;
+    }
+
+    const sourceType = canonicalSourceType(
+      obligation.hmrc_business_type || obligation.hmrc_source
+    );
 
     const { data: taxYear, error: taxYearError } = await supabaseAdmin
       .from("tax_years")
@@ -468,17 +707,16 @@ async function provisionQuarterIncomeSources(params: {
     const { data: incomeSource, error: incomeSourceError } = await supabaseAdmin
       .from("hmrc_income_sources")
       .select(
-        "id, hmrc_business_id, type_of_business, canonical_source_type, source_name, trading_name, accounting_type"
+        "id, hmrc_business_id, type_of_business, canonical_source_type, source_name, trading_name, accounting_type, display_name, source_status, hmrc_evidence_status"
       )
+      .eq("id", obligation.hmrc_income_source_id)
       .eq("client_id", clientId)
       .eq("firm_id", firmId)
-      .eq("hmrc_business_id", obligation.hmrc_business_id)
-      .eq("canonical_source_type", sourceType)
       .maybeSingle();
 
-    if (incomeSourceError) {
+    if (incomeSourceError || !incomeSource?.id) {
       failed++;
-      console.error("HMRC income source lookup failed:", {
+      console.error("Canonical HMRC income source lookup failed:", {
         obligationId: obligation.id,
         incomeSourceError,
       });
@@ -487,12 +725,11 @@ async function provisionQuarterIncomeSources(params: {
 
     const { data: existing, error: existingError } = await supabaseAdmin
       .from("quarter_income_sources")
-      .select("id")
+      .select("id, canonical_income_source_id, hmrc_income_source_id")
       .eq("client_id", clientId)
       .eq("firm_id", firmId)
       .eq("quarter_id", quarter.id)
       .eq("obligation_id", obligation.id)
-      .eq("hmrc_business_id", obligation.hmrc_business_id)
       .maybeSingle();
 
     if (existingError) {
@@ -501,14 +738,26 @@ async function provisionQuarterIncomeSources(params: {
       continue;
     }
 
-    if (existing?.id) {
-      skipped++;
-      continue;
-    }
+    const evidenceVerified = incomeSource.hmrc_evidence_status === "verified";
 
-    const evidenceVerified = Boolean(incomeSource?.id);
+    const sourceEvidenceSnapshot = {
+      canonical_income_source_id: incomeSource.id,
+      hmrc_income_source_id: incomeSource.id,
+      hmrc_business_id: incomeSource.hmrc_business_id,
+      canonical_source_type: incomeSource.canonical_source_type,
+      type_of_business: incomeSource.type_of_business,
+      source_name: incomeSource.source_name,
+      display_name: incomeSource.display_name,
+      trading_name: incomeSource.trading_name,
+      accounting_type: incomeSource.accounting_type,
+      source_status: incomeSource.source_status,
+      hmrc_evidence_status: incomeSource.hmrc_evidence_status,
+      verified_at: new Date().toISOString(),
+      verification_method:
+        "canonical_registry_from_hmrc_obligation_income_source",
+    };
 
-    const insertPayload = {
+    const basePayload = {
       firm_id: firmId,
       client_id: clientId,
       tax_year_id: taxYear.id,
@@ -518,35 +767,42 @@ async function provisionQuarterIncomeSources(params: {
       hmrc_source: obligation.hmrc_source,
       hmrc_business_id: obligation.hmrc_business_id,
       canonical_source_type: sourceType,
-      hmrc_income_source_id: incomeSource?.id || null,
+
+      hmrc_income_source_id: incomeSource.id,
+      canonical_income_source_id: incomeSource.id,
 
       period_start: obligation.start_date,
       period_end: obligation.end_date,
 
+      source_evidence_status: evidenceVerified ? "verified" : "unverified",
+      source_evidence_snapshot: sourceEvidenceSnapshot,
+
+      updated_at: new Date().toISOString(),
+    };
+
+    if (existing?.id) {
+      const { error: updateError } = await supabaseAdmin
+        .from("quarter_income_sources")
+        .update(basePayload)
+        .eq("id", existing.id);
+
+      if (updateError) {
+        failed++;
+        console.error("Quarter income source update failed:", updateError);
+      } else {
+        updated++;
+      }
+
+      continue;
+    }
+
+    const insertPayload = {
+      ...basePayload,
       status: "not_started",
       income: 0,
       expenses: 0,
       profit: 0,
-
-      source_evidence_status: evidenceVerified ? "verified" : "unverified",
-            source_evidence_snapshot:
-        evidenceVerified && incomeSource
-          ? {
-              hmrc_income_source_id: incomeSource.id,
-              hmrc_business_id: incomeSource.hmrc_business_id,
-              canonical_source_type: incomeSource.canonical_source_type,
-              type_of_business: incomeSource.type_of_business,
-              source_name: incomeSource.source_name,
-              trading_name: incomeSource.trading_name,
-              accounting_type: incomeSource.accounting_type,
-              verified_at: new Date().toISOString(),
-              verification_method:
-                "sync_route_provision_from_hmrc_obligation_and_income_source",
-            }
-          : {},
-
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
     };
 
     const { error: insertError } = await supabaseAdmin
@@ -564,6 +820,7 @@ async function provisionQuarterIncomeSources(params: {
   return {
     created,
     skipped,
+    updated,
     failed,
     error: null,
   };
@@ -688,6 +945,7 @@ export async function POST(req: NextRequest) {
       hmrcData: data,
       correlationId,
       testScenario,
+      performedBy: user.id,
     });
 
     const { saved, failed } = await saveObligations({
@@ -695,6 +953,7 @@ export async function POST(req: NextRequest) {
       clientId: client.id,
       hmrcData: data,
       correlationId,
+      sourceMap: incomeSourceSync.sourceMap,
     });
 
     const profileSync = await saveHmrcProfileSnapshot({
@@ -730,7 +989,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       message:
-        "HMRC obligations, income sources and source-level client workspace synced successfully.",
+        "HMRC obligations synced through canonical income source registry successfully.",
       firmId: client.firm_id,
       clientId: client.id,
       clientName: getClientDisplayName(client),
@@ -740,6 +999,8 @@ export async function POST(req: NextRequest) {
       failed,
 
       incomeSourcesSaved: incomeSourceSync.saved,
+      incomeSourcesCreated: incomeSourceSync.created,
+      incomeSourcesUpdated: incomeSourceSync.updated,
       incomeSourcesFailed: incomeSourceSync.failed,
 
       detectedTaxYears,
@@ -756,6 +1017,7 @@ export async function POST(req: NextRequest) {
         0,
 
       quarterIncomeSourcesCreated: quarterIncomeSourceProvisioning.created,
+      quarterIncomeSourcesUpdated: quarterIncomeSourceProvisioning.updated,
       quarterIncomeSourcesSkipped: quarterIncomeSourceProvisioning.skipped,
       quarterIncomeSourcesFailed: quarterIncomeSourceProvisioning.failed,
       quarterIncomeSourceProvisioningWarning:
