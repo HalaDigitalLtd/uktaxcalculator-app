@@ -5,6 +5,12 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabase } from "../../../../../../../../lib/supabaseClient";
+import { EvidenceSection } from "../../../../../../../components/forensics/EvidenceSection";
+import { EvidenceStatusPill } from "../../../../../../../components/forensics/EvidenceStatusPill";
+import { HashEvidenceGrid } from "../../../../../../../components/forensics/HashEvidenceGrid";
+import { ImmutableBanner } from "../../../../../../../components/forensics/ImmutableBanner";
+import { JsonEvidenceCard } from "../../../../../../../components/forensics/JsonEvidenceCard";
+import { LineagePanel } from "../../../../../../../components/forensics/LineagePanel";
 
 type Row = Record<string, any>;
 
@@ -20,31 +26,10 @@ function dateTime(value: any) {
   return new Date(value).toLocaleString("en-GB");
 }
 
-function pretty(value: any) {
-  return JSON.stringify(value ?? {}, null, 2);
-}
-
 function countItems(value: any) {
   if (Array.isArray(value)) return value.length;
   if (value && typeof value === "object") return Object.keys(value).length;
   return 0;
-}
-
-function StatusPill({ ok, label }: { ok: boolean; label: string }) {
-  return (
-    <span style={ok ? styles.passPill : styles.warnPill}>
-      {ok ? "✓" : "!"} {label}
-    </span>
-  );
-}
-
-function JsonCard({ title, value }: { title: string; value: any }) {
-  return (
-    <details open style={styles.card}>
-      <summary style={styles.summaryTitle}>{title}</summary>
-      <pre style={styles.pre}>{pretty(value)}</pre>
-    </details>
-  );
 }
 
 export default function SnapshotDetailPage() {
@@ -88,54 +73,18 @@ export default function SnapshotDetailPage() {
     if (!snapshot) return [];
 
     return [
-      {
-        label: "Payload hash preserved",
-        ok: Boolean(snapshot.payload_hash),
-      },
-      {
-        label: "Ledger hash preserved",
-        ok: Boolean(snapshot.ledger_hash),
-      },
-      {
-        label: "Totals hash preserved",
-        ok: Boolean(snapshot.totals_hash),
-      },
-      {
-        label: "HMRC payload preserved",
-        ok: countItems(snapshot.hmrc_payload) > 0,
-      },
-      {
-        label: "HMRC response preserved",
-        ok: countItems(snapshot.hmrc_response) > 0,
-      },
-      {
-        label: "Fraud headers preserved",
-        ok: countItems(snapshot.fraud_headers) > 0,
-      },
-      {
-        label: "Tenant context preserved",
-        ok: countItems(snapshot.tenant_context) > 0,
-      },
-      {
-        label: "Audit context preserved",
-        ok: countItems(snapshot.audit_context) > 0,
-      },
-      {
-        label: "Submitted actor role preserved",
-        ok: Boolean(snapshot.submitted_by_role),
-      },
-      {
-        label: "Digital link metadata present",
-        ok: countItems(snapshot.digital_link_metadata) > 0,
-      },
-      {
-        label: "Transaction snapshot present",
-        ok: countItems(snapshot.transaction_snapshot) > 0,
-      },
-      {
-        label: "Batch snapshot present",
-        ok: countItems(snapshot.batch_snapshot) > 0,
-      },
+      { label: "Payload hash preserved", ok: Boolean(snapshot.payload_hash) },
+      { label: "Ledger hash preserved", ok: Boolean(snapshot.ledger_hash) },
+      { label: "Totals hash preserved", ok: Boolean(snapshot.totals_hash) },
+      { label: "HMRC payload preserved", ok: countItems(snapshot.hmrc_payload) > 0 },
+      { label: "HMRC response preserved", ok: countItems(snapshot.hmrc_response) > 0 },
+      { label: "Fraud headers preserved", ok: countItems(snapshot.fraud_headers) > 0 },
+      { label: "Tenant context preserved", ok: countItems(snapshot.tenant_context) > 0 },
+      { label: "Audit context preserved", ok: countItems(snapshot.audit_context) > 0 },
+      { label: "Submitted actor role preserved", ok: Boolean(snapshot.submitted_by_role) },
+      { label: "Digital link metadata present", ok: countItems(snapshot.digital_link_metadata) > 0 },
+      { label: "Transaction snapshot present", ok: countItems(snapshot.transaction_snapshot) > 0 },
+      { label: "Batch snapshot present", ok: countItems(snapshot.batch_snapshot) > 0 },
     ];
   }, [snapshot]);
 
@@ -144,7 +93,7 @@ export default function SnapshotDetailPage() {
   if (loading) {
     return (
       <main style={styles.page}>
-        <div style={styles.card}>Loading forensic snapshot evidence...</div>
+        <EvidenceSection title="Loading">Loading forensic snapshot evidence...</EvidenceSection>
       </main>
     );
   }
@@ -183,10 +132,7 @@ export default function SnapshotDetailPage() {
           </p>
         </div>
 
-        <div style={styles.headerActions}>
-          <span style={styles.lockPill}>Immutable</span>
-          <span style={styles.lockPill}>Read-only</span>
-        </div>
+        <ImmutableBanner />
       </div>
 
       {failedChecks.length > 0 && (
@@ -196,26 +142,33 @@ export default function SnapshotDetailPage() {
             These warnings do not edit the record. They highlight forensic
             evidence gaps that should be reviewed before HMRC production use.
           </p>
+
           <div style={styles.pillGrid}>
             {failedChecks.map((check) => (
-              <StatusPill key={check.label} ok={false} label={check.label} />
+              <EvidenceStatusPill
+                key={check.label}
+                ok={false}
+                label={check.label}
+              />
             ))}
           </div>
         </section>
       )}
 
-      <section style={styles.card}>
-        <h2 style={styles.cardTitle}>Evidence Integrity Checklist</h2>
+      <EvidenceSection title="Evidence Integrity Checklist">
         <div style={styles.pillGrid}>
           {checks.map((check) => (
-            <StatusPill key={check.label} ok={check.ok} label={check.label} />
+            <EvidenceStatusPill
+              key={check.label}
+              ok={check.ok}
+              label={check.label}
+            />
           ))}
         </div>
-      </section>
+      </EvidenceSection>
 
       <section style={styles.grid}>
-        <div style={styles.card}>
-          <h2 style={styles.cardTitle}>Submission Identity</h2>
+        <EvidenceSection title="Submission Identity">
           <dl style={styles.dl}>
             <dt>Type</dt>
             <dd>{snapshot.submission_type}</dd>
@@ -230,10 +183,9 @@ export default function SnapshotDetailPage() {
             <dt>Source table</dt>
             <dd>{snapshot.source_table || "Not recorded"}</dd>
           </dl>
-        </div>
+        </EvidenceSection>
 
-        <div style={styles.card}>
-          <h2 style={styles.cardTitle}>HMRC References</h2>
+        <EvidenceSection title="HMRC References">
           <dl style={styles.dl}>
             <dt>Correlation ID</dt>
             <dd>{snapshot.hmrc_correlation_id || "Not recorded"}</dd>
@@ -244,13 +196,16 @@ export default function SnapshotDetailPage() {
             <dt>Idempotency Key</dt>
             <dd>{snapshot.idempotency_key}</dd>
           </dl>
-        </div>
+        </EvidenceSection>
 
-        <div style={styles.card}>
-          <h2 style={styles.cardTitle}>Actor + RBAC Evidence</h2>
+        <EvidenceSection title="Actor + RBAC Evidence">
           <dl style={styles.dl}>
             <dt>Submitted by</dt>
-            <dd>{snapshot.submitted_by_email || snapshot.submitted_by || "Not recorded"}</dd>
+            <dd>
+              {snapshot.submitted_by_email ||
+                snapshot.submitted_by ||
+                "Not recorded"}
+            </dd>
             <dt>Role</dt>
             <dd>{snapshot.submitted_by_role || "Not recorded"}</dd>
             <dt>Submitted at</dt>
@@ -258,10 +213,9 @@ export default function SnapshotDetailPage() {
             <dt>Locked at</dt>
             <dd>{dateTime(snapshot.locked_at)}</dd>
           </dl>
-        </div>
+        </EvidenceSection>
 
-        <div style={styles.card}>
-          <h2 style={styles.cardTitle}>Financial Snapshot</h2>
+        <EvidenceSection title="Financial Snapshot">
           <dl style={styles.dl}>
             <dt>Income</dt>
             <dd>{money(snapshot.income_total)}</dd>
@@ -272,97 +226,70 @@ export default function SnapshotDetailPage() {
             <dt>Transactions</dt>
             <dd>{snapshot.transaction_count}</dd>
           </dl>
-        </div>
+        </EvidenceSection>
       </section>
 
-      <section style={styles.card}>
-        <h2 style={styles.cardTitle}>Hash Chain Evidence</h2>
-        <div style={styles.hashGrid}>
-          <div>
-            <span style={styles.label}>Payload Hash</span>
-            <strong style={styles.hash}>{snapshot.payload_hash || "Not recorded"}</strong>
-          </div>
-          <div>
-            <span style={styles.label}>Ledger Hash</span>
-            <strong style={styles.hash}>{snapshot.ledger_hash || "Not recorded"}</strong>
-          </div>
-          <div>
-            <span style={styles.label}>Totals Hash</span>
-            <strong style={styles.hash}>{snapshot.totals_hash || "Not recorded"}</strong>
-          </div>
-          <div>
-            <span style={styles.label}>Submission Hash</span>
-            <strong style={styles.hash}>{snapshot.submission_hash || "Not recorded"}</strong>
-          </div>
-        </div>
-      </section>
+      <EvidenceSection title="Hash Chain Evidence">
+        <HashEvidenceGrid
+          items={[
+            { label: "Payload Hash", value: snapshot.payload_hash },
+            { label: "Ledger Hash", value: snapshot.ledger_hash },
+            { label: "Totals Hash", value: snapshot.totals_hash },
+            { label: "Submission Hash", value: snapshot.submission_hash },
+          ]}
+        />
+      </EvidenceSection>
 
-      <section style={styles.card}>
-        <h2 style={styles.cardTitle}>Amendment / Replay Lineage</h2>
-        <div style={styles.lineageGrid}>
-          <div>
-            <span style={styles.label}>Amendment Record</span>
-            <strong style={styles.hash}>{snapshot.amendment_id || "Not an amendment"}</strong>
-          </div>
-          <div>
-            <span style={styles.label}>Original Snapshot</span>
-            {snapshot.original_snapshot_id ? (
-              <Link
-                href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.original_snapshot_id}`}
-                style={styles.inlineLink}
-              >
-                {snapshot.original_snapshot_id}
-              </Link>
-            ) : (
-              <strong style={styles.hash}>Not recorded</strong>
-            )}
-          </div>
-          <div>
-            <span style={styles.label}>Previous Snapshot</span>
-            {snapshot.previous_snapshot_id ? (
-              <Link
-                href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.previous_snapshot_id}`}
-                style={styles.inlineLink}
-              >
-                {snapshot.previous_snapshot_id}
-              </Link>
-            ) : (
-              <strong style={styles.hash}>Not recorded</strong>
-            )}
-          </div>
-          <div>
-            <span style={styles.label}>Replay Of</span>
-            {snapshot.replay_of_snapshot_id ? (
-              <Link
-                href={`/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.replay_of_snapshot_id}`}
-                style={styles.inlineLink}
-              >
-                {snapshot.replay_of_snapshot_id}
-              </Link>
-            ) : (
-              <strong style={styles.hash}>Not replayed</strong>
-            )}
-          </div>
-        </div>
+      <EvidenceSection title="Amendment / Replay Lineage">
+        <LineagePanel
+          reason={snapshot.amendment_reason}
+          items={[
+            {
+              label: "Amendment Record",
+              value: snapshot.amendment_id,
+              fallback: "Not an amendment",
+            },
+            {
+              label: "Original Snapshot",
+              value: snapshot.original_snapshot_id,
+              href: snapshot.original_snapshot_id
+                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.original_snapshot_id}`
+                : undefined,
+              fallback: "Not recorded",
+            },
+            {
+              label: "Previous Snapshot",
+              value: snapshot.previous_snapshot_id,
+              href: snapshot.previous_snapshot_id
+                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.previous_snapshot_id}`
+                : undefined,
+              fallback: "Not recorded",
+            },
+            {
+              label: "Replay Of",
+              value: snapshot.replay_of_snapshot_id,
+              href: snapshot.replay_of_snapshot_id
+                ? `/dashboard/clients/${clientId}/tax-years/${taxYearId}/snapshots/${snapshot.replay_of_snapshot_id}`
+                : undefined,
+              fallback: "Not replayed",
+            },
+          ]}
+        />
+      </EvidenceSection>
 
-        {snapshot.amendment_reason && (
-          <p style={styles.reasonBox}>{snapshot.amendment_reason}</p>
-        )}
-      </section>
-
-      <JsonCard title="Original Totals" value={snapshot.original_totals} />
-      <JsonCard title="Adjustment Totals" value={snapshot.adjustment_totals} />
-      <JsonCard title="Submitted Totals" value={snapshot.submitted_totals} />
-      <JsonCard title="Immutable HMRC Payload" value={snapshot.hmrc_payload} />
-      <JsonCard title="Immutable HMRC Response" value={snapshot.hmrc_response} />
-      <JsonCard title="Fraud Prevention Headers" value={snapshot.fraud_headers} />
-      <JsonCard title="OAuth Context" value={snapshot.oauth_context} />
-      <JsonCard title="Tenant Context" value={snapshot.tenant_context} />
-      <JsonCard title="Audit Context" value={snapshot.audit_context} />
-      <JsonCard title="Transaction Snapshot" value={snapshot.transaction_snapshot} />
-      <JsonCard title="Source Totals Snapshot" value={snapshot.source_totals_snapshot} />
-      <JsonCard title="Batch Snapshot" value={snapshot.batch_snapshot} />
-      <JsonCard title="Digital Link Metadata" value={snapshot.digital_link_metadata} />
+      <JsonEvidenceCard title="Original Totals" value={snapshot.original_totals} />
+      <JsonEvidenceCard title="Adjustment Totals" value={snapshot.adjustment_totals} />
+      <JsonEvidenceCard title="Submitted Totals" value={snapshot.submitted_totals} />
+      <JsonEvidenceCard title="Immutable HMRC Payload" value={snapshot.hmrc_payload} />
+      <JsonEvidenceCard title="Immutable HMRC Response" value={snapshot.hmrc_response} />
+      <JsonEvidenceCard title="Fraud Prevention Headers" value={snapshot.fraud_headers} />
+      <JsonEvidenceCard title="OAuth Context" value={snapshot.oauth_context} />
+      <JsonEvidenceCard title="Tenant Context" value={snapshot.tenant_context} />
+      <JsonEvidenceCard title="Audit Context" value={snapshot.audit_context} />
+      <JsonEvidenceCard title="Transaction Snapshot" value={snapshot.transaction_snapshot} />
+      <JsonEvidenceCard title="Source Totals Snapshot" value={snapshot.source_totals_snapshot} />
+      <JsonEvidenceCard title="Batch Snapshot" value={snapshot.batch_snapshot} />
+      <JsonEvidenceCard title="Digital Link Metadata" value={snapshot.digital_link_metadata} />
     </main>
   );
 }
@@ -382,11 +309,6 @@ const styles: Record<string, CSSProperties> = {
     gap: 24,
     alignItems: "flex-start",
     marginBottom: 24,
-  },
-  headerActions: {
-    display: "flex",
-    gap: 10,
-    flexWrap: "wrap",
   },
   backLink: {
     color: "#2563eb",
@@ -417,25 +339,6 @@ const styles: Record<string, CSSProperties> = {
     gap: 16,
     marginBottom: 16,
   },
-  card: {
-    background: "white",
-    border: "1px solid #e5e7eb",
-    borderRadius: 18,
-    padding: 20,
-    marginBottom: 16,
-    boxShadow: "0 10px 25px rgba(15, 23, 42, 0.06)",
-  },
-  cardTitle: {
-    margin: "0 0 14px",
-    fontSize: 20,
-    fontWeight: 900,
-  },
-  summaryTitle: {
-    cursor: "pointer",
-    fontSize: 20,
-    fontWeight: 900,
-    marginBottom: 14,
-  },
   dl: {
     display: "grid",
     gridTemplateColumns: "150px 1fr",
@@ -443,56 +346,11 @@ const styles: Record<string, CSSProperties> = {
     margin: 0,
     wordBreak: "break-word",
   },
-  hashGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-    gap: 14,
-  },
-  lineageGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-    gap: 14,
-  },
-  label: {
-    display: "block",
-    color: "#64748b",
-    fontSize: 12,
-    fontWeight: 900,
-    textTransform: "uppercase",
-    marginBottom: 6,
-  },
-  hash: {
-    display: "block",
-    fontFamily:
-      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-    fontSize: 12,
-    overflowWrap: "anywhere",
-  },
   monospace: {
     fontFamily:
       "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
     fontSize: 12,
     overflowWrap: "anywhere",
-  },
-  inlineLink: {
-    display: "block",
-    color: "#2563eb",
-    fontFamily:
-      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-    fontSize: 12,
-    overflowWrap: "anywhere",
-    fontWeight: 800,
-  },
-  pre: {
-    margin: 0,
-    padding: 16,
-    background: "#0f172a",
-    color: "#e5e7eb",
-    borderRadius: 12,
-    overflowX: "auto",
-    fontSize: 12,
-    lineHeight: 1.5,
-    maxHeight: 620,
   },
   warningCard: {
     background: "#fffbeb",
@@ -516,46 +374,6 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexWrap: "wrap",
     gap: 10,
-  },
-  passPill: {
-    display: "inline-flex",
-    padding: "8px 10px",
-    borderRadius: 999,
-    background: "#ecfdf5",
-    color: "#047857",
-    border: "1px solid #10b981",
-    fontSize: 12,
-    fontWeight: 900,
-  },
-  warnPill: {
-    display: "inline-flex",
-    padding: "8px 10px",
-    borderRadius: 999,
-    background: "#fffbeb",
-    color: "#92400e",
-    border: "1px solid #f59e0b",
-    fontSize: 12,
-    fontWeight: 900,
-  },
-  lockPill: {
-    display: "inline-flex",
-    padding: "10px 12px",
-    borderRadius: 999,
-    background: "#eef2ff",
-    color: "#3730a3",
-    border: "1px solid #c7d2fe",
-    fontSize: 12,
-    fontWeight: 900,
-    textTransform: "uppercase",
-  },
-  reasonBox: {
-    margin: "16px 0 0",
-    padding: 14,
-    borderRadius: 12,
-    background: "#f8fafc",
-    border: "1px solid #e5e7eb",
-    color: "#334155",
-    fontWeight: 700,
   },
   secondaryButton: {
     display: "inline-flex",
