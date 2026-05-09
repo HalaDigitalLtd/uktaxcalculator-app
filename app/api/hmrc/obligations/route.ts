@@ -27,6 +27,13 @@ function safeJsonParse(text: string) {
   }
 }
 
+function canonicalSourceType(value: string | null | undefined) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_");
+}
+
 function getTaxYearLabelFromEndDate(endDate: string) {
   const endYear = new Date(endDate).getFullYear();
   const startYear = endYear - 1;
@@ -102,7 +109,8 @@ async function saveIncomeSources(params: {
       firm_id: firmId,
       client_id: clientId,
       hmrc_business_id: businessId,
-      type_of_business: typeOfBusiness,
+      type_of_business: canonicalSourceType(typeOfBusiness),
+      canonical_source_type: canonicalSourceType(typeOfBusiness),
       source_name: typeOfBusiness,
       active: true,
       last_seen_at: new Date().toISOString(),
@@ -148,6 +156,7 @@ async function saveHmrcProfileSnapshot(params: {
   const detectedIncomeSources = businesses.map((business: Row) => ({
     businessId: business?.businessId || null,
     typeOfBusiness: business?.typeOfBusiness || null,
+    canonicalSourceType: canonicalSourceType(business?.typeOfBusiness),
     obligationCount: Array.isArray(business?.obligationDetails)
       ? business.obligationDetails.length
       : 0,
@@ -323,6 +332,7 @@ async function saveObligations(params: {
           ...obligation,
           businessId,
           typeOfBusiness,
+          canonicalSourceType: canonicalSourceType(typeOfBusiness),
           correlationId,
         },
       };
@@ -383,6 +393,179 @@ async function runProvisioning(clientId: string) {
     matchResult,
     provisionErrorMessage,
     matchErrorMessage,
+  };
+}
+
+async function provisionQuarterIncomeSources(params: {
+  firmId: string;
+  clientId: string;
+}) {
+  const { firmId, clientId } = params;
+
+  const { data: obligations, error: obligationsError } = await supabaseAdmin
+    .from("obligations")
+    .select(
+      "id, client_id, firm_id, hmrc_source, hmrc_business_id, hmrc_business_type, start_date, end_date, status"
+    )
+    .eq("client_id", clientId)
+    .eq("firm_id", firmId)
+    .not("hmrc_business_id", "is", null)
+    .order("start_date", { ascending: true });
+
+  if (obligationsError) {
+    console.error("Quarter income source provisioning obligations load failed:", obligationsError);
+    return {
+      created: 0,
+      skipped: 0,
+      failed: 0,
+      error: obligationsError.message,
+    };
+  }
+
+  let created = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const obligation of obligations || []) {
+    const sourceType = canonicalSourceType(obligation.hmrc_business_type || obligation.hmrc_source);
+
+    const { data: taxYear, error: taxYearError } = await supabaseAdmin
+      .from("tax_years")
+      .select("id")
+      .eq("client_id", clientId)
+      .eq("firm_id", firmId)
+      .lte("start_date", obligation.start_date)
+      .gte("end_date", obligation.end_date)
+      .maybeSingle();
+
+    if (taxYearError || !taxYear?.id) {
+      failed++;
+      console.error("Tax year missing for obligation:", {
+        obligationId: obligation.id,
+        taxYearError,
+      });
+      continue;
+    }
+
+    const { data: quarter, error: quarterError } = await supabaseAdmin
+      .from("quarters")
+      .select("id")
+      .eq("tax_year_id", taxYear.id)
+      .eq("firm_id", firmId)
+      .eq("start_date", obligation.start_date)
+      .eq("end_date", obligation.end_date)
+      .maybeSingle();
+
+    if (quarterError || !quarter?.id) {
+      failed++;
+      console.error("Quarter missing for obligation:", {
+        obligationId: obligation.id,
+        quarterError,
+      });
+      continue;
+    }
+
+    const { data: incomeSource, error: incomeSourceError } = await supabaseAdmin
+      .from("hmrc_income_sources")
+      .select(
+        "id, hmrc_business_id, type_of_business, canonical_source_type, source_name, trading_name, accounting_type"
+      )
+      .eq("client_id", clientId)
+      .eq("firm_id", firmId)
+      .eq("hmrc_business_id", obligation.hmrc_business_id)
+      .eq("canonical_source_type", sourceType)
+      .maybeSingle();
+
+    if (incomeSourceError) {
+      failed++;
+      console.error("HMRC income source lookup failed:", {
+        obligationId: obligation.id,
+        incomeSourceError,
+      });
+      continue;
+    }
+
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from("quarter_income_sources")
+      .select("id")
+      .eq("client_id", clientId)
+      .eq("firm_id", firmId)
+      .eq("quarter_id", quarter.id)
+      .eq("obligation_id", obligation.id)
+      .eq("hmrc_business_id", obligation.hmrc_business_id)
+      .maybeSingle();
+
+    if (existingError) {
+      failed++;
+      console.error("Quarter income source duplicate check failed:", existingError);
+      continue;
+    }
+
+    if (existing?.id) {
+      skipped++;
+      continue;
+    }
+
+    const evidenceVerified = Boolean(incomeSource?.id);
+
+    const insertPayload = {
+      firm_id: firmId,
+      client_id: clientId,
+      tax_year_id: taxYear.id,
+      quarter_id: quarter.id,
+      obligation_id: obligation.id,
+
+      hmrc_source: obligation.hmrc_source,
+      hmrc_business_id: obligation.hmrc_business_id,
+      canonical_source_type: sourceType,
+      hmrc_income_source_id: incomeSource?.id || null,
+
+      period_start: obligation.start_date,
+      period_end: obligation.end_date,
+
+      status: "not_started",
+      income: 0,
+      expenses: 0,
+      profit: 0,
+
+      source_evidence_status: evidenceVerified ? "verified" : "unverified",
+            source_evidence_snapshot:
+        evidenceVerified && incomeSource
+          ? {
+              hmrc_income_source_id: incomeSource.id,
+              hmrc_business_id: incomeSource.hmrc_business_id,
+              canonical_source_type: incomeSource.canonical_source_type,
+              type_of_business: incomeSource.type_of_business,
+              source_name: incomeSource.source_name,
+              trading_name: incomeSource.trading_name,
+              accounting_type: incomeSource.accounting_type,
+              verified_at: new Date().toISOString(),
+              verification_method:
+                "sync_route_provision_from_hmrc_obligation_and_income_source",
+            }
+          : {},
+
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error: insertError } = await supabaseAdmin
+      .from("quarter_income_sources")
+      .insert(insertPayload);
+
+    if (insertError) {
+      failed++;
+      console.error("Quarter income source insert failed:", insertError);
+    } else {
+      created++;
+    }
+  }
+
+  return {
+    created,
+    skipped,
+    failed,
+    error: null,
   };
 }
 
@@ -529,6 +712,11 @@ export async function POST(req: NextRequest) {
       matchErrorMessage,
     } = await runProvisioning(client.id);
 
+    const quarterIncomeSourceProvisioning = await provisionQuarterIncomeSources({
+      firmId: client.firm_id,
+      clientId: client.id,
+    });
+
     const detectedTaxYears = Array.from(
       new Set(
         getObligationBusinesses(data).flatMap((business: any) =>
@@ -542,7 +730,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       message:
-        "HMRC obligations, income sources and client workspace synced successfully.",
+        "HMRC obligations, income sources and source-level client workspace synced successfully.",
       firmId: client.firm_id,
       clientId: client.id,
       clientName: getClientDisplayName(client),
@@ -566,6 +754,12 @@ export async function POST(req: NextRequest) {
         provisionResult?.created_quarters_attempted ??
         provisionResult?.[0]?.created_quarters_attempted ??
         0,
+
+      quarterIncomeSourcesCreated: quarterIncomeSourceProvisioning.created,
+      quarterIncomeSourcesSkipped: quarterIncomeSourceProvisioning.skipped,
+      quarterIncomeSourcesFailed: quarterIncomeSourceProvisioning.failed,
+      quarterIncomeSourceProvisioningWarning:
+        quarterIncomeSourceProvisioning.error,
 
       provisionWarning: provisionErrorMessage,
       matchWarning: matchErrorMessage,
