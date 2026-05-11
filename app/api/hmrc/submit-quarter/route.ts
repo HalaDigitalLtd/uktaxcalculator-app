@@ -83,12 +83,12 @@ function buildEndpoint(params: {
   const year = taxYearCode(taxYearLabel);
 
   if (sourceType === "uk_property") {
-    return `/individuals/business/property/uk/${nino}/${businessId}/period/${year}`;
-  }
+  return `/individuals/business/property/uk/${nino}/${businessId}/period`;
+}
 
-  if (sourceType === "foreign_property") {
-    return `/individuals/business/property/foreign/${nino}/${businessId}/period/${year}`;
-  }
+if (sourceType === "foreign_property") {
+  return `/individuals/business/property/foreign/${nino}/${businessId}/period`;
+}
 
   return `/individuals/business/self-employment/${nino}/${businessId}/period`;
 }
@@ -504,7 +504,10 @@ if (
         periodStart,
         periodEnd,
       });
-
+const acceptHeader =
+  sourceType === "self_employment"
+    ? "application/vnd.hmrc.5.0+json"
+    : "application/vnd.hmrc.6.0+json";
       const hmrcResponse = await hmrcRequest({
         accessToken,
         endpoint,
@@ -512,7 +515,7 @@ if (
         body: hmrcPayload,
         fraudHeaders,
         testScenario: "DEFAULT",
-        acceptHeader: "application/vnd.hmrc.5.0+json",
+        acceptHeader,
       });
 
       const hmrcSubmissionId =
