@@ -191,7 +191,7 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           error:
-            "No active quarter ledger transactions to submit. HMRC submissions must be derived from quarter_transactions only.",
+            "No active ledger entries to submit. HMRC submissions must be derived from canonical ledger evidence only.",
         },
         { status: 400 }
       );
@@ -447,7 +447,44 @@ export async function POST(req: NextRequest) {
         });
         continue;
       }
+const taxYearLabelValue =
+  taxYear.year_label || taxYear.label || "";
 
+const propertyYearMatch = String(taxYearLabelValue).match(/^(\d{4})-/);
+
+const propertyStartYear = propertyYearMatch
+  ? Number(propertyYearMatch[1])
+  : null;
+
+if (
+  (sourceType === "uk_property" ||
+    sourceType === "foreign_property") &&
+  propertyStartYear !== null &&
+  propertyStartYear < 2021
+) {
+  hmrcResults.push({
+    success: false,
+    skipped: false,
+    sourceRowId: source.sourceRowId,
+    obligationId: source.obligationId,
+    sourceType,
+    businessType,
+    businessId,
+    periodStart,
+    periodEnd,
+    statusCode: 400,
+    correlationId: null,
+    hmrcSubmissionId: null,
+    errorCode: "UNSUPPORTED_PROPERTY_TAX_YEAR",
+    errorMessage:
+      "HMRC Property Business sandbox APIs are only supported reliably from 2021-22 onwards.",
+    endpoint: null,
+    payload: null,
+    response: null,
+  });
+
+  continue;
+}
       const endpoint = buildEndpoint({
         sourceType,
         nino,
@@ -696,7 +733,7 @@ export async function POST(req: NextRequest) {
       auditContext: {
         source: "source_aware_quarter_ledger",
         immutableSnapshot: true,
-        digitalLinkSource: "quarter_transactions",
+        digitalLinkSource: "ledger_entries",
         sourceModel: "quarter_income_sources",
         transactionCount: ledger.totals.transactionCount,
         batchCount: ledger.batches.length,
@@ -774,12 +811,14 @@ export async function POST(req: NextRequest) {
       .eq("firm_id", client.firm_id)
       .eq("client_id", client.id)
       .eq("tax_year_id", taxYear.id);
-
+await supabaseAdmin.rpc("reconcile_quarter_status_from_sources", {
+  p_quarter_id: quarterId,
+});
     return NextResponse.json({
       success: allSuccess,
       partial_success: anySuccess && !allSuccess,
       mode: "real_hmrc_api",
-      source: "quarter_transactions",
+      source: "ledger_entries",
       sourceModel: "quarter_income_sources",
       retryFailedOnly,
       message: allSuccess

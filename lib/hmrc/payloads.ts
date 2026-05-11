@@ -61,21 +61,15 @@ export function buildForeignPropertyPayload(
   return {
     fromDate: periodStart,
     toDate: periodEnd,
-    foreignProperty: [
-      {
-        countryCode: "AE",
-        income: {
-          rentIncome: money(totals.income),
-          foreignTaxCreditRelief: false,
-          premiumsOfLeaseGrant: 0,
-          otherPropertyIncome: 0,
-          foreignTaxPaidOrDeducted: 0,
-          specialWithholdingTaxOrUkTaxPaid: 0,
-        },
-        expenses: {
-          consolidatedExpenses: money(totals.expenses),
-        },
+
+    foreignFhlEea: {
+      income: {
+        periodAmount: money(totals.income),
       },
-    ],
+
+      expenses: {
+        consolidatedExpenses: money(totals.expenses),
+      },
+    },
   };
 }
