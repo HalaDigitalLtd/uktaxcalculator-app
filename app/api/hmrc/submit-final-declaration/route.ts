@@ -354,7 +354,7 @@ if (taxYearLedger.totals.transactionCount <= 0) {
     {
       success: false,
       error:
-        "No active digital ledger transactions found for this tax year. Final Declaration must be derived from quarter_transactions.",
+        "No active digital ledger transactions found for this tax year. Final Declaration must be derived from canonical ledger evidence.",
     },
     { status: 400 }
   );
@@ -429,7 +429,8 @@ if (taxYearLedger.totals.transactionCount <= 0) {
     const endpointTemplate = process.env.HMRC_FINAL_DECLARATION_ENDPOINT_TEMPLATE;
 
     if (endpointTemplate) {
-      const accessToken = await getValidHmrcToken(client.firm_id);
+      const tokenResult = await getValidHmrcToken(client.id);
+      const accessToken = tokenResult.accessToken;
 
       if (!accessToken) {
         return NextResponse.json(
@@ -682,7 +683,7 @@ batchSnapshot: taxYearBatches,
     immutableSnapshot: true,
     workflow: "final_declaration",
     amendmentSafe: true,
-    digitalLinkSource: "quarter_transactions",
+    digitalLinkSource: "ledger_entries",
     sourceCount: taxYearSourceTotals.length,
     transactionCount: taxYearLedger.totals.transactionCount,
   },

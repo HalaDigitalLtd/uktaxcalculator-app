@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../../lib/supabaseAdmin";
 import { getValidHmrcToken } from "../../../../../lib/hmrc/getValidHmrcToken";
 import {
@@ -26,9 +26,17 @@ function bad(message: string, status = 400) {
   return NextResponse.json({ success: false, error: message }, { status });
 }
 
-function deterministicSandboxBusinessId(canonicalType: CanonicalSourceType) {
-  if (canonicalType === "uk_property") return "XPIS12345678901";
-  if (canonicalType === "foreign_property") return "XFIS12345678901";
+function deterministicSandboxBusinessId(
+  canonicalType: CanonicalSourceType,
+) {
+  if (canonicalType === "uk_property") {
+    return "XPIS12345678901";
+  }
+
+  if (canonicalType === "foreign_property") {
+    return "XFIS12345678901";
+  }
+
   return "XBIS12345678901";
 }
 
@@ -40,6 +48,7 @@ async function getClient(clientId: string) {
     .single();
 
   if (error) throw error;
+
   return data;
 }
 
@@ -54,6 +63,7 @@ async function getTaxYear(taxYearId?: string, fallbackTaxYear?: string) {
     .single();
 
   if (error) throw error;
+
   return data.year_label;
 }
 
@@ -69,7 +79,11 @@ async function runProvisioning(clientId: string) {
       p_client_id: clientId,
     });
 
-    calls.push({ fn, result: data, error });
+    calls.push({
+      fn,
+      result: data,
+      error,
+    });
   }
 
   return calls;
@@ -90,20 +104,35 @@ export async function POST(req: NextRequest) {
     }
 
     const client = await getClient(body.clientId);
+
     const nino = cleanNino(body.nino || client.nino);
 
     if (!nino) {
       return bad("Client NINO missing");
     }
 
-    const taxYear = await getTaxYear(body.taxYearId, body.taxYear);
-    const accessToken = await getValidHmrcToken(body.clientId);
+    const taxYear = await getTaxYear(
+      body.taxYearId,
+      body.taxYear,
+    );
+
+    const token = await getValidHmrcToken(body.clientId);
+
+const accessToken = token.accessToken;
 
     const requestedTypes: TestBusinessType[] = [];
 
-    if (body.includeSelfEmployment) requestedTypes.push("self-employment");
-    if (body.includeUkProperty !== false) requestedTypes.push("uk-property");
-    if (body.includeForeignProperty !== false) requestedTypes.push("foreign-property");
+    if (body.includeSelfEmployment) {
+      requestedTypes.push("self-employment");
+    }
+
+    if (body.includeUkProperty !== false) {
+      requestedTypes.push("uk-property");
+    }
+
+    if (body.includeForeignProperty !== false) {
+      requestedTypes.push("foreign-property");
+    }
 
     const createResults: any[] = [];
 
@@ -115,7 +144,10 @@ export async function POST(req: NextRequest) {
         taxYear,
       });
 
-      createResults.push({ typeOfBusiness, ...result });
+      createResults.push({
+        typeOfBusiness,
+        ...result,
+      });
 
       if (!result.created && !result.alreadyExisted) {
         return NextResponse.json(
@@ -143,28 +175,45 @@ export async function POST(req: NextRequest) {
 
     const requiredTypes: CanonicalSourceType[] = [];
 
-    if (body.includeSelfEmployment) requiredTypes.push("self_employment");
-    if (body.includeUkProperty !== false) requiredTypes.push("uk_property");
-    if (body.includeForeignProperty !== false) requiredTypes.push("foreign_property");
+    if (body.includeSelfEmployment) {
+      requiredTypes.push("self_employment");
+    }
 
-    const sandboxFallbacks: Array<{
-      canonical_source_type: CanonicalSourceType;
-      hmrc_business_id: string;
-      raw: any;
-    }> = [];
+    if (body.includeUkProperty !== false) {
+      requiredTypes.push("uk_property");
+    }
+
+    if (body.includeForeignProperty !== false) {
+      requiredTypes.push("foreign_property");
+    }
+
+    const sandboxFallbacks: any[] = [];
 
     for (const type of requiredTypes) {
-      if (existingTypes.has(type)) continue;
+      if (existingTypes.has(type)) {
+        continue;
+      }
 
-      if (type === "uk_property" || type === "foreign_property") {
-        const hmrcBusinessId = deterministicSandboxBusinessId(type);
+      // Permanent sandbox fallback:
+      // HMRC sandbox property businesses often exist in stateful backend
+      // but Business Details API still returns 404.
+      // We therefore hydrate canonical sandbox IDs deterministically.
+      if (
+        type === "uk_property" ||
+        type === "foreign_property"
+      ) {
+        const hmrcBusinessId =
+          deterministicSandboxBusinessId(type);
 
         const fallback = {
           canonical_source_type: type,
           hmrc_business_id: hmrcBusinessId,
           raw: {
             businessId: hmrcBusinessId,
-            typeOfBusiness: type === "uk_property" ? "uk-property" : "foreign-property",
+            typeOfBusiness:
+              type === "uk_property"
+                ? "uk-property"
+                : "foreign-property",
             sandboxFallback: true,
             reason:
               "HMRC sandbox Business Details API returned 404 despite RULE_PROPERTY_BUSINESS_ADDED confirmation.",
@@ -207,7 +256,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || "Unexpected prepare-client failure",
+        error:
+          error?.message ||
+          "Unexpected prepare-client failure",
         detail: error,
       },
       { status: 500 },

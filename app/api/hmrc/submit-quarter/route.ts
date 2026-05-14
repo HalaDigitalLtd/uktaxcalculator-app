@@ -323,7 +323,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const accessToken = await getValidHmrcToken(client.id);
+    const tokenResult = await getValidHmrcToken(client.id);`r`n    const accessToken = tokenResult.accessToken;
 
     if (!accessToken) {
       return NextResponse.json(
