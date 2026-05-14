@@ -9,6 +9,10 @@ function money(value: any) {
   return Number(n.toFixed(2));
 }
 
+/**
+ * Legacy/self-employment period summary payload.
+ * Used for non-cumulative period endpoints only.
+ */
 export function buildSelfEmploymentPayload(
   totals: QuarterTotals,
   periodStart: string,
@@ -26,6 +30,32 @@ export function buildSelfEmploymentPayload(
     },
     periodExpenses: {
       consolidatedExpenses: money(totals.expenses),
+    },
+  };
+}
+
+/**
+ * HMRC Self Employment cumulative period summary payload.
+ * Used for:
+ * /individuals/business/self-employment/{nino}/{businessId}/cumulative/{taxYear}
+ */
+export function buildSelfEmploymentCumulativePayload(
+  totals: QuarterTotals,
+  periodStart: string,
+  periodEnd: string
+) {
+  return {
+    fromDate: periodStart,
+    toDate: periodEnd,
+    selfEmployment: {
+      income: {
+        turnover: money(totals.income),
+        other: 0,
+        taxTakenOffTradingIncome: 0,
+      },
+      expenses: {
+        consolidatedExpenses: money(totals.expenses),
+      },
     },
   };
 }
@@ -53,6 +83,14 @@ export function buildUKPropertyPayload(
   };
 }
 
+export function buildUKPropertyCumulativePayload(
+  totals: QuarterTotals,
+  periodStart: string,
+  periodEnd: string
+) {
+  return buildUKPropertyPayload(totals, periodStart, periodEnd);
+}
+
 export function buildForeignPropertyPayload(
   totals: QuarterTotals,
   periodStart: string,
@@ -61,15 +99,21 @@ export function buildForeignPropertyPayload(
   return {
     fromDate: periodStart,
     toDate: periodEnd,
-
     foreignFhlEea: {
       income: {
         periodAmount: money(totals.income),
       },
-
       expenses: {
         consolidatedExpenses: money(totals.expenses),
       },
     },
   };
+}
+
+export function buildForeignPropertyCumulativePayload(
+  totals: QuarterTotals,
+  periodStart: string,
+  periodEnd: string
+) {
+  return buildForeignPropertyPayload(totals, periodStart, periodEnd);
 }

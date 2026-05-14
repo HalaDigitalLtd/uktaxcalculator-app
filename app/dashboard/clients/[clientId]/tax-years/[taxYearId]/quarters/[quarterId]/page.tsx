@@ -990,7 +990,114 @@ export default function QuarterWorkspacePage() {
 
     setSaving(false);
   }
+  async function submitQuarterToHmrc() {
+  if (!canUseWorkspace) {
+    setMessage("You do not have active firm access for this workspace.");
+    return;
+  }
 
+  if (!selectedSource) {
+    setMessage("Select HMRC income source first.");
+    return;
+  }
+
+  if (workspaceLocked) {
+    setMessage("This HMRC source is locked.");
+    return;
+  }
+
+  if (selectedSource.source_evidence_status !== "verified") {
+    setMessage(
+      "This HMRC source is not verified. Run HMRC sync/source mapping before submission."
+    );
+    return;
+  }
+
+  const alreadySubmitted =
+    selectedSource.status === "submitted" ||
+    selectedSource.status === "accepted" ||
+    selectedSource.workflow_state === "submitted" ||
+    selectedSource.last_submission_status === "submitted";
+
+  if (alreadySubmitted) {
+    setMessage(
+      `${sourceLabel(
+        selectedSource.canonical_source_type || selectedSource.hmrc_source
+      )} has already been submitted to HMRC.`
+    );
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Submit ONLY ${sourceLabel(
+      selectedSource.canonical_source_type || selectedSource.hmrc_source
+    )} to HMRC from frozen cumulative ledger evidence?`
+  );
+
+  if (!confirmed) return;
+
+  setSaving(true);
+
+  setMessage(
+    `Submitting ${sourceLabel(
+      selectedSource.canonical_source_type || selectedSource.hmrc_source
+    )} to HMRC...`
+  );
+
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    const token = session?.access_token;
+
+    if (!token) {
+      throw new Error("You must be logged in to submit to HMRC.");
+    }
+
+    const response = await fetch("/api/hmrc/submit-quarter", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        quarterId,
+        quarterIncomeSourceId: selectedSource.id,
+        retry_failed_only: false,
+      }),
+    });
+
+    const result = await response.json();
+
+    console.log("HMRC source submission result", result);
+
+    if (!response.ok || !result.success) {
+      setMessage(
+        result.error ||
+          result.message ||
+          "HMRC source submission failed."
+      );
+
+      setSaving(false);
+      return;
+    }
+
+    await loadData(selectedSource.id);
+
+    setMessage(
+      `${sourceLabel(
+        selectedSource.canonical_source_type || selectedSource.hmrc_source
+      )} submitted successfully to HMRC.`
+    );
+  } catch (e: any) {
+    console.error(e);
+
+    setMessage(e.message || "Failed submitting HMRC source.");
+  }
+
+  setSaving(false);
+}
   function resetCsvImport() {
     setCsvFileName("");
     setCsvFileHash("");
@@ -1758,7 +1865,7 @@ setMessage("Ledger batch reverted. Related entries were excluded.");
                 </p>
               </div>
 
-              <div style={styles.buttonRow}>
+                            <div style={styles.buttonRow}>
                 <label style={styles.checkboxLabel}>
                   <input
                     type="checkbox"
@@ -1781,7 +1888,28 @@ setMessage("Ledger batch reverted. Related entries were excluded.");
                 >
                   Mark Prepared
                 </button>
+
+                <button
+  onClick={submitQuarterToHmrc}
+  disabled={
+    !canUseWorkspace ||
+    saving ||
+    !selectedSource ||
+    workspaceLocked
+  }
+  style={
+    !canUseWorkspace ||
+    saving ||
+    !selectedSource ||
+    workspaceLocked
+      ? styles.disabledButton
+      : styles.primaryButton
+  }
+>
+  Submit Selected Source To HMRC
+</button>
               </div>
+                    
             </div>
 
             {!workspaceLocked && canUseWorkspace && (

@@ -45,6 +45,14 @@ export function taxYearStartYear(label: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function cleanNino(nino: string) {
+  return String(nino || "").replace(/\s+/g, "").toUpperCase();
+}
+
+function cleanBusinessId(businessId: string) {
+  return String(businessId || "").replace(/\s+/g, "").toUpperCase();
+}
+
 export function resolveHmrcQuarterSubmissionStrategy(params: {
   sourceType: HmrcSourceType;
   nino: string;
@@ -53,7 +61,9 @@ export function resolveHmrcQuarterSubmissionStrategy(params: {
   propertyId?: string | null;
   environment?: "sandbox" | "production";
 }): HmrcSubmissionStrategyResult {
-  const { sourceType, nino, businessId, propertyId } = params;
+  const sourceType = params.sourceType;
+  const nino = cleanNino(params.nino);
+  const businessId = cleanBusinessId(params.businessId);
   const taxYear = taxYearCode(params.taxYearLabel);
   const startYear = taxYearStartYear(taxYear);
   const environment = params.environment || "sandbox";
@@ -73,7 +83,7 @@ export function resolveHmrcQuarterSubmissionStrategy(params: {
       sourceType === "self_employment"
         ? "application/vnd.hmrc.5.0+json"
         : "application/vnd.hmrc.6.0+json",
-    requiresTaxYearInEndpoint: sourceType !== "self_employment",
+    requiresTaxYearInEndpoint: true,
     taxYear,
     taxYearStart: startYear,
     sourceType,
@@ -99,6 +109,13 @@ export function resolveHmrcQuarterSubmissionStrategy(params: {
     return unsupported(
       "HMRC_STRATEGY_INPUT_MISSING",
       "Missing NINO, business ID, or valid tax year. Strategy could not be resolved safely."
+    );
+  }
+
+  if (!/^20\d{2}-\d{2}$/.test(taxYear)) {
+    return unsupported(
+      "HMRC_STRATEGY_INVALID_TAX_YEAR",
+      "Tax year must be in HMRC format, for example 2026-27."
     );
   }
 
@@ -134,7 +151,7 @@ export function resolveHmrcQuarterSubmissionStrategy(params: {
     if (environment === "sandbox" && startYear < 2021) {
       return unsupported(
         "UNSUPPORTED_PROPERTY_TAX_YEAR",
-        "HMRC Property Business sandbox minimum tax year for property period/annual APIs is 2021-22."
+        "HMRC Property Business sandbox minimum tax year for property APIs is 2021-22."
       );
     }
 
@@ -169,7 +186,7 @@ export function resolveHmrcQuarterSubmissionStrategy(params: {
     if (environment === "sandbox" && startYear < 2021) {
       return unsupported(
         "UNSUPPORTED_PROPERTY_TAX_YEAR",
-        "HMRC Foreign Property sandbox minimum tax year is 2021-22 and maximum old period-summary support is 2024-25."
+        "HMRC Foreign Property sandbox minimum tax year is 2021-22."
       );
     }
 
@@ -187,26 +204,13 @@ export function resolveHmrcQuarterSubmissionStrategy(params: {
       };
     }
 
-    if (startYear >= 2026 && !propertyId) {
-      return unsupported(
-        "FOREIGN_PROPERTY_ID_REQUIRED",
-        "HMRC foreign property cumulative flow supports propertyId from 2026-27 onwards. Store/retrieve propertyId before submission.",
-        true
-      );
-    }
-
-    const propertyIdQuery =
-      startYear >= 2026 && propertyId
-        ? `?propertyId=${encodeURIComponent(propertyId)}`
-        : "";
-
     return {
       ...base,
       supported: true,
       strategy: "foreign_property_cumulative",
-      endpoint: `/individuals/business/property/foreign/${nino}/${businessId}/cumulative/${taxYear}${propertyIdQuery}`,
+      endpoint: `/individuals/business/property/foreign/${nino}/${businessId}/cumulative/${taxYear}`,
       method: "PUT",
-      requiresPropertyId: startYear >= 2026,
+      requiresPropertyId: false,
       responseSubmissionIdField: null,
       unsupportedCode: null,
       unsupportedReason: null,

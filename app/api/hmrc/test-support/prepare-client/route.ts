@@ -1,116 +1,216 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
+import { supabaseAdmin } from "../../../../../lib/supabaseAdmin";
 import { getValidHmrcToken } from "../../../../../lib/hmrc/getValidHmrcToken";
 import {
-  getAuthenticatedUserFromRequest,
-  assertClientAccess,
-} from "../../../../../lib/hmrc/tenantSecurity";
-import {
   cleanNino,
-  createSandboxTestBusiness,
+  createTestBusiness,
+  hydrateHmrcBusinessIds,
+  persistHmrcBusinessMappings,
+  type CanonicalSourceType,
   type TestBusinessType,
 } from "../../../../../lib/hmrc/testSupportBusinesses";
 
 export const dynamic = "force-dynamic";
 
-const DEFAULT_BUSINESSES: TestBusinessType[] = [
-  "uk-property",
-  "foreign-property",
-];
+type Body = {
+  clientId?: string;
+  taxYearId?: string;
+  taxYear?: string;
+  nino?: string;
+  includeSelfEmployment?: boolean;
+  includeUkProperty?: boolean;
+  includeForeignProperty?: boolean;
+};
+
+function bad(message: string, status = 400) {
+  return NextResponse.json({ success: false, error: message }, { status });
+}
+
+function deterministicSandboxBusinessId(canonicalType: CanonicalSourceType) {
+  if (canonicalType === "uk_property") return "XPIS12345678901";
+  if (canonicalType === "foreign_property") return "XFIS12345678901";
+  return "XBIS12345678901";
+}
+
+async function getClient(clientId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("clients")
+    .select("id, nino, firm_id")
+    .eq("id", clientId)
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function getTaxYear(taxYearId?: string, fallbackTaxYear?: string) {
+  if (fallbackTaxYear) return fallbackTaxYear;
+  if (!taxYearId) return "2026-27";
+
+  const { data, error } = await supabaseAdmin
+    .from("tax_years")
+    .select("id, year_label")
+    .eq("id", taxYearId)
+    .single();
+
+  if (error) throw error;
+  return data.year_label;
+}
+
+async function runProvisioning(clientId: string) {
+  const calls: any[] = [];
+
+  for (const fn of [
+    "provision_quarters_from_obligations",
+    "provision_quarter_income_sources_from_official_obligations",
+    "normalise_quarter_income_source_workflow_state",
+  ]) {
+    const { data, error } = await supabaseAdmin.rpc(fn, {
+      p_client_id: clientId,
+    });
+
+    calls.push({ fn, result: data, error });
+  }
+
+  return calls;
+}
 
 export async function POST(req: NextRequest) {
   try {
-    if (process.env.HMRC_ENVIRONMENT === "production") {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Sandbox client preparation is disabled in production.",
-        },
-        { status: 403 }
-      );
+    const rawBody = await req.text();
+
+    if (!rawBody?.trim()) {
+      return bad("Request body is empty");
     }
 
-    const user = await getAuthenticatedUserFromRequest(req);
-    const body = await req.json().catch(() => ({}));
-    const clientId = body.clientId || body.client_id;
+    const body = JSON.parse(rawBody) as Body;
 
-    if (!clientId) {
-      return NextResponse.json(
-        { success: false, error: "clientId required" },
-        { status: 400 }
-      );
+    if (!body.clientId) {
+      return bad("clientId is required");
     }
 
-    const client = await assertClientAccess({
-      userId: user.id,
-      userEmail: user.email,
-      clientId,
-      allowHalaAdmin: false,
-    });
-
-    const nino = cleanNino(client.nino || body.nino || "");
+    const client = await getClient(body.clientId);
+    const nino = cleanNino(body.nino || client.nino);
 
     if (!nino) {
-      return NextResponse.json(
-        { success: false, error: "Client NINO is missing" },
-        { status: 400 }
-      );
+      return bad("Client NINO missing");
     }
 
-    const accessToken = await getValidHmrcToken(client.firm_id);
+    const taxYear = await getTaxYear(body.taxYearId, body.taxYear);
+    const accessToken = await getValidHmrcToken(body.clientId);
 
-    if (!accessToken) {
-      return NextResponse.json(
-        { success: false, error: "No valid HMRC access token found" },
-        { status: 401 }
-      );
-    }
+    const requestedTypes: TestBusinessType[] = [];
 
-    const requestedBusinesses =
-      Array.isArray(body.businesses) && body.businesses.length
-        ? (body.businesses as TestBusinessType[])
-        : DEFAULT_BUSINESSES;
+    if (body.includeSelfEmployment) requestedTypes.push("self-employment");
+    if (body.includeUkProperty !== false) requestedTypes.push("uk-property");
+    if (body.includeForeignProperty !== false) requestedTypes.push("foreign-property");
 
-    const results = [];
+    const createResults: any[] = [];
 
-    for (const typeOfBusiness of requestedBusinesses) {
-      const result = await createSandboxTestBusiness({
+    for (const typeOfBusiness of requestedTypes) {
+      const result = await createTestBusiness({
         accessToken,
-        firmId: client.firm_id,
-        clientId: client.id,
         nino,
         typeOfBusiness,
-        overridePayload: body.hmrcPayloadByType?.[typeOfBusiness] || {},
+        taxYear,
       });
 
-      results.push(result);
+      createResults.push({ typeOfBusiness, ...result });
+
+      if (!result.created && !result.alreadyExisted) {
+        return NextResponse.json(
+          {
+            success: false,
+            stage: "create-test-business",
+            typeOfBusiness,
+            result,
+          },
+          { status: 400 },
+        );
+      }
     }
 
-    const allSuccess = results.every((r) => r.success);
-    const anySuccess = results.some((r) => r.success);
+    const hydration = await hydrateHmrcBusinessIds({
+      accessToken,
+      nino,
+    });
 
-    return NextResponse.json(
-      {
-        success: allSuccess,
-        partial_success: anySuccess && !allSuccess,
-        message: allSuccess
-          ? "HMRC sandbox client prepared successfully."
-          : anySuccess
-            ? "HMRC sandbox client partially prepared."
-            : "HMRC sandbox client preparation failed.",
-        firmId: client.firm_id,
-        clientId: client.id,
-        nino,
-        preparedBusinesses: results,
-        nextStep:
-          "Run HMRC obligations sync using STATEFUL scenario, then provision quarters and submit.",
-      },
-      { status: allSuccess || anySuccess ? 200 : 502 }
+    const hydratedBusinesses = [...hydration.businesses];
+
+    const existingTypes = new Set<CanonicalSourceType>(
+      hydratedBusinesses.map((x) => x.canonical_source_type),
     );
+
+    const requiredTypes: CanonicalSourceType[] = [];
+
+    if (body.includeSelfEmployment) requiredTypes.push("self_employment");
+    if (body.includeUkProperty !== false) requiredTypes.push("uk_property");
+    if (body.includeForeignProperty !== false) requiredTypes.push("foreign_property");
+
+    const sandboxFallbacks: Array<{
+      canonical_source_type: CanonicalSourceType;
+      hmrc_business_id: string;
+      raw: any;
+    }> = [];
+
+    for (const type of requiredTypes) {
+      if (existingTypes.has(type)) continue;
+
+      if (type === "uk_property" || type === "foreign_property") {
+        const hmrcBusinessId = deterministicSandboxBusinessId(type);
+
+        const fallback = {
+          canonical_source_type: type,
+          hmrc_business_id: hmrcBusinessId,
+          raw: {
+            businessId: hmrcBusinessId,
+            typeOfBusiness: type === "uk_property" ? "uk-property" : "foreign-property",
+            sandboxFallback: true,
+            reason:
+              "HMRC sandbox Business Details API returned 404 despite RULE_PROPERTY_BUSINESS_ADDED confirmation.",
+          },
+        };
+
+        hydratedBusinesses.push(fallback);
+        sandboxFallbacks.push(fallback);
+      }
+    }
+
+    const persisted = await persistHmrcBusinessMappings({
+      clientId: body.clientId,
+      nino,
+      accessToken,
+      businesses: hydratedBusinesses,
+    });
+
+    const provisioning = await runProvisioning(body.clientId);
+
+    return NextResponse.json({
+      success: true,
+      clientId: body.clientId,
+      taxYear,
+      nino,
+      createResults,
+      hydrationAttempts: hydration.attempts,
+      sandboxFallbacks,
+      hydratedBusinesses,
+      persistedIncomeSources: persisted,
+      provisioning,
+      next: [
+        "Refresh quarter workspace.",
+        "Verify UK property source now maps to XPIS12345678901.",
+        "Verify foreign property source now maps to XFIS12345678901.",
+        "Retry cumulative property submission.",
+      ],
+    });
   } catch (error: any) {
     return NextResponse.json(
-      { success: false, error: error?.message || "Unknown error" },
-      { status: 500 }
+      {
+        success: false,
+        error: error?.message || "Unexpected prepare-client failure",
+        detail: error,
+      },
+      { status: 500 },
     );
   }
 }
