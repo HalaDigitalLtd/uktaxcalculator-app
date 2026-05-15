@@ -30,7 +30,19 @@ async function resolveFirmForUser(userId: string, requestedFirmId: string | null
 
 export async function GET(req: NextRequest) {
   try {
-    const user = await getAuthenticatedUserFromRequest(req);
+    let user: any = null;
+
+    try {
+      user = await getAuthenticatedUserFromRequest(req);
+    } catch {
+      return NextResponse.json({
+        success: true,
+        allowed: false,
+        reason: "unauthenticated",
+        firmId: null,
+        billingStatus: "none",
+      });
+    }
     const requestedFirmId = req.nextUrl.searchParams.get("firmId");
 
     const firmUser = await resolveFirmForUser(user.id, requestedFirmId);
