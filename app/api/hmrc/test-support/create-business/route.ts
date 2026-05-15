@@ -34,9 +34,7 @@ export async function POST(req: NextRequest) {
     const nino = cleanNino(body.nino);
     const taxYear = body.taxYear || "2026-27";
 
-    const token = await getValidHmrcToken(clientId);
-
-    const accessToken = token.accessToken;
+    const accessToken = await getValidHmrcToken(clientId);
 
     if (!accessToken) {
       return bad("No valid HMRC access token found for this client", 401);

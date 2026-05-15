@@ -429,8 +429,7 @@ if (taxYearLedger.totals.transactionCount <= 0) {
     const endpointTemplate = process.env.HMRC_FINAL_DECLARATION_ENDPOINT_TEMPLATE;
 
     if (endpointTemplate) {
-      const tokenResult = await getValidHmrcToken(client.id);
-      const accessToken = tokenResult.accessToken;
+      const accessToken = await getValidHmrcToken(client.id);
 
       if (!accessToken) {
         return NextResponse.json(

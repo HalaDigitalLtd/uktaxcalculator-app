@@ -116,9 +116,7 @@ export async function POST(req: NextRequest) {
       body.taxYear,
     );
 
-    const token = await getValidHmrcToken(body.clientId);
-
-const accessToken = token.accessToken;
+    const accessToken = await getValidHmrcToken(body.clientId);
 
     const requestedTypes: TestBusinessType[] = [];
 
