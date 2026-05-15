@@ -24,7 +24,7 @@ function isAllowedPath(pathname: string) {
   return ALWAYS_ALLOWED_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
-function getImpersonatedFirmId() {
+function getStoredFirmId() {
   if (typeof window === "undefined") return null;
 
   return (
@@ -32,6 +32,27 @@ function getImpersonatedFirmId() {
     window.localStorage.getItem("active_firm_id") ||
     null
   );
+}
+
+function getSupabaseAccessToken() {
+  if (typeof window === "undefined") return null;
+
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i) || "";
+
+    if (!key.startsWith("sb-") || !key.endsWith("-auth-token")) continue;
+
+    try {
+      const value = JSON.parse(window.localStorage.getItem(key) || "{}");
+      const token = value?.access_token || value?.currentSession?.access_token;
+
+      if (token) return String(token);
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
 }
 
 export default function StrictBillingGate({
@@ -58,12 +79,22 @@ export default function StrictBillingGate({
 
     async function checkAccess() {
       try {
-        const firmId = getImpersonatedFirmId();
+        const firmId = getStoredFirmId();
+        const token = getSupabaseAccessToken();
+
+        if (!token) {
+          router.replace("/dashboard/settings/billing?reason=unauthenticated");
+          return;
+        }
+
         const query = firmId ? `?firmId=${encodeURIComponent(firmId)}` : "";
 
         const response = await fetch(`/api/billing/access-status${query}`, {
           method: "GET",
           cache: "no-store",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
         });
 
         const data = (await response.json()) as BillingAccessResponse;

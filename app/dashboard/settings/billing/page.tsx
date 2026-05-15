@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 
@@ -12,29 +12,92 @@ type BillingStatus = {
   trialEnd?: string | null;
 };
 
+type Plan = {
+  slug: string;
+  name: string;
+  description: string;
+  stripePriceId: string | null;
+  monthlyPriceGbp: number | null;
+  clientLimit: number;
+  staffLimit: number;
+  monthlySubmissionLimit: number;
+  storageMbLimit: number;
+  features: Record<string, boolean>;
+};
+
+function getStoredFirmId() {
+  if (typeof window === "undefined") return null;
+
+  return (
+    window.localStorage.getItem("impersonate_firm_id") ||
+    window.localStorage.getItem("active_firm_id") ||
+    null
+  );
+}
+
+function getSupabaseAccessToken() {
+  if (typeof window === "undefined") return null;
+
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i) || "";
+
+    if (!key.startsWith("sb-") || !key.endsWith("-auth-token")) continue;
+
+    try {
+      const value = JSON.parse(window.localStorage.getItem(key) || "{}");
+      const token = value?.access_token || value?.currentSession?.access_token;
+
+      if (token) return String(token);
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
 export default function BillingSettingsPage() {
   const [status, setStatus] = useState<BillingStatus | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
-  const [portalLoading, setPortalLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  async function authorisedFetch(url: string, options: RequestInit = {}) {
+    const token = getSupabaseAccessToken();
+
+    return fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+  }
 
   useEffect(() => {
     async function load() {
       try {
-        const firmId =
-          window.localStorage.getItem("impersonate_firm_id") ||
-          window.localStorage.getItem("active_firm_id") ||
-          null;
-
+        const firmId = getStoredFirmId();
         const query = firmId ? `?firmId=${encodeURIComponent(firmId)}` : "";
-        const response = await fetch(`/api/billing/access-status${query}`, {
-          cache: "no-store",
-        });
 
-        const data = await response.json();
-        setStatus(data);
+        const [statusResponse, plansResponse] = await Promise.all([
+          authorisedFetch(`/api/billing/access-status${query}`, {
+            cache: "no-store",
+          }),
+          fetch("/api/billing/plans", {
+            cache: "no-store",
+          }),
+        ]);
+
+        const statusData = await statusResponse.json();
+        const plansData = await plansResponse.json();
+
+        setStatus(statusData);
+        setPlans(plansData?.plans || []);
       } catch {
-        setMessage("Unable to check billing status.");
+        setMessage("Unable to load billing information.");
       } finally {
         setLoading(false);
       }
@@ -43,24 +106,55 @@ export default function BillingSettingsPage() {
     load();
   }, []);
 
+  async function startCheckout(planSlug: string) {
+    const firmId = status?.firmId || getStoredFirmId();
+
+    if (!firmId) {
+      setMessage("No firm found. Please log in again.");
+      return;
+    }
+
+    setActionLoading(planSlug);
+    setMessage(null);
+
+    try {
+      const response = await authorisedFetch("/api/billing/create-checkout-session", {
+        method: "POST",
+        body: JSON.stringify({
+          firmId,
+          planSlug,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data?.url) {
+        throw new Error(data?.error || "Unable to start checkout");
+      }
+
+      window.location.href = data.url;
+    } catch (error: any) {
+      setMessage(error?.message || "Unable to start checkout.");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function openBillingPortal() {
-    if (!status?.firmId) {
+    const firmId = status?.firmId || getStoredFirmId();
+
+    if (!firmId) {
       setMessage("No firm found for billing.");
       return;
     }
 
-    setPortalLoading(true);
+    setActionLoading("portal");
     setMessage(null);
 
     try {
-      const response = await fetch("/api/billing/create-portal-session", {
+      const response = await authorisedFetch("/api/billing/create-portal-session", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          firmId: status.firmId,
-        }),
+        body: JSON.stringify({ firmId }),
       });
 
       const data = await response.json();
@@ -73,12 +167,12 @@ export default function BillingSettingsPage() {
     } catch (error: any) {
       setMessage(error?.message || "Unable to open billing portal.");
     } finally {
-      setPortalLoading(false);
+      setActionLoading(null);
     }
   }
 
   return (
-    <main style={{ padding: 32, maxWidth: 900, margin: "0 auto" }}>
+    <main style={{ padding: 32, maxWidth: 1100, margin: "0 auto" }}>
       <div
         style={{
           border: "1px solid #e5e7eb",
@@ -86,19 +180,18 @@ export default function BillingSettingsPage() {
           padding: 28,
           background: "white",
           boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
+          marginBottom: 24,
         }}
       >
-        <h1 style={{ fontSize: 28, marginBottom: 8 }}>
-          Hala Digital Billing
-        </h1>
+        <h1 style={{ fontSize: 30, marginBottom: 8 }}>Hala Digital Billing</h1>
 
         <p style={{ color: "#4b5563", marginBottom: 24 }}>
-          Your firm must have an active Hala Digital subscription to access the
-          software, clients, HMRC workflows and practice tools.
+          Accounting firms need an active Hala Digital subscription to access
+          clients, HMRC workflows, MTD submissions and practice tools.
         </p>
 
         {loading ? (
-          <p>Checking billing status...</p>
+          <p>Loading billing status...</p>
         ) : (
           <>
             <div
@@ -109,7 +202,7 @@ export default function BillingSettingsPage() {
                 border: status?.allowed
                   ? "1px solid #a7f3d0"
                   : "1px solid #fecaca",
-                marginBottom: 20,
+                marginBottom: 18,
               }}
             >
               <strong>Status: </strong>
@@ -126,29 +219,26 @@ export default function BillingSettingsPage() {
               )}
             </div>
 
-            {!status?.allowed && (
-              <p style={{ color: "#991b1b", marginBottom: 20 }}>
-                Access to the Hala Digital software is currently locked because
-                your firm does not have an active subscription. Please complete
-                or restore billing to continue.
+            {status?.allowed ? (
+              <button
+                onClick={openBillingPortal}
+                disabled={actionLoading === "portal"}
+                style={{
+                  padding: "12px 18px",
+                  borderRadius: 10,
+                  border: "none",
+                  background: "#111827",
+                  color: "white",
+                  fontWeight: 700,
+                }}
+              >
+                {actionLoading === "portal" ? "Opening..." : "Manage billing"}
+              </button>
+            ) : (
+              <p style={{ color: "#991b1b" }}>
+                Select a plan below to activate access.
               </p>
             )}
-
-            <button
-              onClick={openBillingPortal}
-              disabled={portalLoading || !status?.firmId}
-              style={{
-                padding: "12px 18px",
-                borderRadius: 10,
-                border: "none",
-                background: "#111827",
-                color: "white",
-                fontWeight: 700,
-                cursor: portalLoading ? "not-allowed" : "pointer",
-              }}
-            >
-              {portalLoading ? "Opening..." : "Manage billing"}
-            </button>
 
             {message && (
               <p style={{ color: "#b91c1c", marginTop: 16 }}>{message}</p>
@@ -156,6 +246,69 @@ export default function BillingSettingsPage() {
           </>
         )}
       </div>
+
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: 18,
+        }}
+      >
+        {plans.map((plan) => (
+          <div
+            key={plan.slug}
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: 16,
+              padding: 22,
+              background: "white",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.05)",
+            }}
+          >
+            <h2 style={{ fontSize: 22, marginBottom: 6 }}>{plan.name}</h2>
+
+            <p style={{ color: "#4b5563", minHeight: 42 }}>
+              {plan.description || "Firm-level Hala Digital access"}
+            </p>
+
+            <div style={{ fontSize: 28, fontWeight: 800, margin: "14px 0" }}>
+              {plan.monthlyPriceGbp
+                ? `GBP ${plan.monthlyPriceGbp}/mo`
+                : "Custom"}
+            </div>
+
+            <ul style={{ paddingLeft: 18, lineHeight: 1.8 }}>
+              <li>{plan.clientLimit} clients</li>
+              <li>{plan.staffLimit} staff users</li>
+              <li>{plan.monthlySubmissionLimit} monthly submissions</li>
+              <li>{plan.storageMbLimit} MB storage</li>
+            </ul>
+
+            <button
+              onClick={() => startCheckout(plan.slug)}
+              disabled={!plan.stripePriceId || actionLoading === plan.slug}
+              style={{
+                width: "100%",
+                padding: "12px 16px",
+                borderRadius: 10,
+                border: "none",
+                background: plan.stripePriceId ? "#111827" : "#9ca3af",
+                color: "white",
+                fontWeight: 700,
+                marginTop: 14,
+                cursor: plan.stripePriceId ? "pointer" : "not-allowed",
+              }}
+            >
+              {actionLoading === plan.slug
+                ? "Starting..."
+                : plan.stripePriceId
+                  ? "Activate plan"
+                  : "Stripe price missing"}
+            </button>
+          </div>
+        ))}
+      </section>
     </main>
   );
 }
+

@@ -4,271 +4,203 @@ import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import { getAuthenticatedUserFromRequest } from "../../../../lib/hmrc/tenantSecurity";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-type Body = {
-  planCode?: string;
-  firmId?: string;
+const ENV_PRICE_IDS: Record<string, string | undefined> = {
+  starter: process.env.STRIPE_PRICE_STARTER,
+  practice: process.env.STRIPE_PRICE_PRACTICE,
+  scale: process.env.STRIPE_PRICE_SCALE,
+  enterprise: process.env.STRIPE_PRICE_ENTERPRISE,
 };
 
-function bad(message: string, status = 400) {
-  return NextResponse.json({ success: false, error: message }, { status });
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error("Missing STRIPE_SECRET_KEY");
+
+  return new Stripe(key, {
+    apiVersion: "2026-04-22.dahlia",
+  });
 }
 
-function getBaseUrl(req: NextRequest) {
-  const configured =
-    process.env.NEXT_PUBLIC_SITE_URL ||
+function originFromRequest(req: NextRequest) {
+  return (
     process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.VERCEL_URL;
+    req.headers.get("origin") ||
+    "http://localhost:3000"
+  );
+}
 
-  if (configured) {
-    return configured.startsWith("http") ? configured : `https://${configured}`;
+async function getFirmMembership(userId: string, requestedFirmId?: string | null) {
+  let query = supabaseAdmin
+    .from("firm_users")
+    .select("firm_id, role, status")
+    .eq("user_id", userId)
+    .eq("status", "active");
+
+  if (requestedFirmId) query = query.eq("firm_id", requestedFirmId);
+
+  const { data, error } = await query.limit(1).maybeSingle();
+  if (error) throw error;
+
+  return data;
+}
+
+async function getFirmBillingEmail(firmId: string, userEmail?: string | null) {
+  const { data } = await supabaseAdmin
+    .from("firms")
+    .select("name, email")
+    .eq("id", firmId)
+    .maybeSingle();
+
+  return {
+    firmName: data?.name || "Hala Digital Firm",
+    email: data?.email || userEmail || undefined,
+  };
+}
+
+async function getPlan(planSlug: string) {
+  const { data, error } = await supabaseAdmin
+    .from("subscription_plans")
+    .select("*")
+    .eq("slug", planSlug)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  const envPriceId = ENV_PRICE_IDS[planSlug];
+
+  if (data?.stripe_price_id || envPriceId) {
+    return {
+      slug: planSlug,
+      planId: data?.id || null,
+      name: data?.name || planSlug,
+      stripePriceId: data?.stripe_price_id || envPriceId,
+    };
   }
 
-  return req.nextUrl.origin;
-}
-
-function roleCanManageBilling(role: string | null | undefined) {
-  return ["owner", "admin", "partner", "hala_super_admin"].includes(
-    String(role || "").toLowerCase(),
-  );
+  throw new Error(`Stripe price ID missing for plan: ${planSlug}`);
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-
-    if (!stripeSecretKey) {
-      return bad("STRIPE_SECRET_KEY is not configured.", 500);
-    }
-
-    const stripe = new Stripe(stripeSecretKey);
-
     const user = await getAuthenticatedUserFromRequest(req);
+    const body = await req.json().catch(() => ({}));
 
-    let body: Body = {};
+    const planSlug = String(body?.planSlug || "practice").toLowerCase();
+    const requestedFirmId = body?.firmId ? String(body.firmId) : null;
 
-    try {
-      body = (await req.json()) as Body;
-    } catch {
-      body = {};
+    const membership = await getFirmMembership(user.id, requestedFirmId);
+
+    if (!membership?.firm_id) {
+      return NextResponse.json(
+        { success: false, error: "No active firm membership found" },
+        { status: 403 }
+      );
     }
 
-    const planCode = body.planCode || "beta_founder";
-
-    const { data: plan, error: planError } = await supabaseAdmin
-      .from("subscription_plans")
-      .select("*")
-      .eq("code", planCode)
-      .eq("active", true)
-      .maybeSingle();
-
-    if (planError) {
-      return bad(planError.message, 500);
+    if (!["admin", "partner", "hala_super_admin"].includes(membership.role)) {
+      return NextResponse.json(
+        { success: false, error: "Only firm admins or partners can start billing" },
+        { status: 403 }
+      );
     }
 
-    if (!plan) {
-      return bad("Subscription plan not found or inactive.", 404);
-    }
+    const firmId = membership.firm_id;
+    const plan = await getPlan(planSlug);
+    const stripe = getStripe();
+    const origin = originFromRequest(req);
+    const firmBilling = await getFirmBillingEmail(firmId, (user as any)?.email);
 
-    let firmId = body.firmId || "";
-
-    if (!firmId) {
-      const { data: firmMemberships, error: membershipLookupError } =
-        await supabaseAdmin
-          .from("firm_users")
-          .select("firm_id, role, status, is_active")
-          .eq("user_id", user.id)
-          .eq("status", "active")
-          .eq("is_active", true)
-          .order("created_at", { ascending: true })
-          .limit(1);
-
-      if (membershipLookupError) {
-        return bad(membershipLookupError.message, 500);
-      }
-
-      firmId = String(firmMemberships?.[0]?.firm_id || "");
-    }
-
-    if (!firmId) {
-      return bad("No active firm found for this user.", 403);
-    }
-
-    const { data: membershipRows, error: membershipError } = await supabaseAdmin
-      .from("firm_users")
-      .select("firm_id, user_id, role, status, is_active")
+    const { data: existingSub, error: subError } = await supabaseAdmin
+      .from("firm_subscriptions")
+      .select("stripe_customer_id")
       .eq("firm_id", firmId)
-      .eq("user_id", user.id)
-      .eq("status", "active")
-      .eq("is_active", true)
-      .limit(1);
-
-    if (membershipError) {
-      return bad(membershipError.message, 500);
-    }
-
-    const membership = membershipRows?.[0];
-
-    if (!membership || !roleCanManageBilling(membership.role)) {
-      return bad("You do not have permission to manage billing for this firm.", 403);
-    }
-
-    const { data: firm, error: firmError } = await supabaseAdmin
-      .from("firms")
-      .select("*")
-      .eq("id", firmId)
       .maybeSingle();
 
-    if (firmError) {
-      return bad(firmError.message, 500);
-    }
+    if (subError) throw subError;
 
-    if (!firm) {
-      return bad("Firm not found.", 404);
-    }
+    let customerId = existingSub?.stripe_customer_id || null;
 
-    const { data: existingSubscription, error: existingSubError } =
-      await supabaseAdmin
-        .from("firm_subscriptions")
-        .select("*")
-        .eq("firm_id", firmId)
-        .maybeSingle();
-
-    if (existingSubError) {
-      return bad(existingSubError.message, 500);
-    }
-
-    let stripeCustomerId = existingSubscription?.stripe_customer_id || null;
-
-    if (!stripeCustomerId) {
+    if (!customerId) {
       const customer = await stripe.customers.create({
-        email: user.email || undefined,
-        name: firm.name || firm.firm_name || firm.practice_name || undefined,
+        email: firmBilling.email,
+        name: firmBilling.firmName,
         metadata: {
-          firmId,
-          userId: user.id,
-          source: "hala_digital_saas_checkout",
+          firm_id: firmId,
+          created_by_user_id: user.id,
         },
       });
 
-      stripeCustomerId = customer.id;
+      customerId = customer.id;
     }
 
-    const baseUrl = getBaseUrl(req);
-
-    const checkoutSession = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      client_reference_id: firmId,
-      success_url: `${baseUrl}/app?billing=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/hala?billing=cancelled`,
-      allow_promotion_codes: true,
-      billing_address_collection: "auto",
-      customer_update: {
-        address: "auto",
-        name: "auto",
+    await supabaseAdmin.from("firm_subscriptions").upsert(
+      {
+        firm_id: firmId,
+        plan_id: plan.planId,
+        stripe_customer_id: customerId,
+        stripe_price_id: plan.stripePriceId,
+        status: "pending",
+        billing_status: "pending",
+        access_status: "restricted",
+        access_lock_reason: "checkout_pending",
+        onboarding_status: "billing_started",
+        updated_at: new Date().toISOString(),
       },
+      { onConflict: "firm_id" }
+    );
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: customerId,
       line_items: [
-        plan.stripe_price_id
-          ? {
-              price: plan.stripe_price_id,
-              quantity: 1,
-            }
-          : {
-              quantity: 1,
-              price_data: {
-                currency: "gbp",
-                unit_amount: Math.round(Number(plan.monthly_price_gbp || 0) * 100),
-                recurring: {
-                  interval: "month",
-                },
-                product_data: {
-                  name: plan.name,
-                  description: plan.description || undefined,
-                  metadata: {
-                    planCode: plan.code,
-                    planId: plan.id,
-                  },
-                },
-              },
-            },
+        {
+          price: plan.stripePriceId,
+          quantity: 1,
+        },
       ],
+      success_url: `${origin}/dashboard/settings/billing?checkout=success`,
+      cancel_url: `${origin}/dashboard/settings/billing?checkout=cancelled`,
       subscription_data: {
         metadata: {
-          firmId,
-          planId: plan.id,
-          planCode: plan.code,
-          userId: user.id,
+          firm_id: firmId,
+          plan_slug: plan.slug,
+          created_by_user_id: user.id,
         },
       },
       metadata: {
-        firmId,
-        planId: plan.id,
-        planCode: plan.code,
-        userId: user.id,
+        firm_id: firmId,
+        plan_slug: plan.slug,
+        created_by_user_id: user.id,
       },
+      allow_promotion_codes: true,
     });
-
-    const now = new Date().toISOString();
-
-    const { error: upsertError } = await supabaseAdmin
-      .from("firm_subscriptions")
-      .upsert(
-        {
-          firm_id: firmId,
-          plan_id: plan.id,
-          status: "checkout_pending",
-          stripe_customer_id: stripeCustomerId,
-          stripe_subscription_id: null,
-          cancel_at_period_end: false,
-          updated_at: now,
-        },
-        {
-          onConflict: "firm_id",
-        },
-      );
-
-    if (upsertError) {
-      return bad(upsertError.message, 500);
-    }
 
     await supabaseAdmin.from("billing_events").insert({
       firm_id: firmId,
-      stripe_event_id: `local_checkout_session_${checkoutSession.id}`,
-      stripe_event_type: "checkout.session.created.local",
+      event_type: "checkout_session_created",
+      stripe_customer_id: customerId,
+      status: "pending",
       payload: {
-        checkoutSessionId: checkoutSession.id,
-        url: checkoutSession.url,
-        firmId,
-        planId: plan.id,
-        planCode: plan.code,
-        userId: user.id,
+        checkoutSessionId: session.id,
+        planSlug: plan.slug,
+        stripePriceId: plan.stripePriceId,
       },
-      processed: true,
-      processed_at: now,
+      created_at: new Date().toISOString(),
     });
 
     return NextResponse.json({
       success: true,
-      checkoutSessionId: checkoutSession.id,
-      url: checkoutSession.url,
-      firmId,
-      plan: {
-        id: plan.id,
-        code: plan.code,
-        name: plan.name,
-        monthlyPriceGbp: plan.monthly_price_gbp,
-        maxClients: plan.max_clients,
-        maxTeamMembers: plan.max_team_members,
-      },
+      url: session.url,
+      sessionId: session.id,
     });
   } catch (error: any) {
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || "Failed to create Stripe checkout session.",
+        error: error?.message || "Failed to create checkout session",
       },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }
