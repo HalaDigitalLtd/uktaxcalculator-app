@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type BillingStatus = {
   success: boolean;
@@ -8,8 +8,20 @@ type BillingStatus = {
   reason?: string | null;
   firmId?: string | null;
   billingStatus?: string | null;
-  currentPeriodEnd?: string | null;
-  trialEnd?: string | null;
+  accessStatus?: string | null;
+  planSlug?: string | null;
+  gracePeriodEndsAt?: string | null;
+  usage?: {
+    clients: number;
+    staff: number;
+    monthlySubmissions: number;
+  };
+  limits?: {
+    clientLimit: number;
+    staffLimit: number;
+    monthlySubmissionLimit: number;
+    storageMbLimit: number;
+  };
 };
 
 type Plan = {
@@ -23,6 +35,13 @@ type Plan = {
   monthlySubmissionLimit: number;
   storageMbLimit: number;
   features: Record<string, boolean>;
+};
+
+const PLAN_RANK: Record<string, number> = {
+  starter: 1,
+  practice: 2,
+  scale: 3,
+  enterprise: 4,
 };
 
 function getStoredFirmId() {
@@ -56,12 +75,37 @@ function getSupabaseAccessToken() {
   return null;
 }
 
+function money(plan: Plan) {
+  if (plan.slug === "enterprise") return "Custom";
+  if (!plan.monthlyPriceGbp) return "Custom";
+  return `£${plan.monthlyPriceGbp}/mo`;
+}
+
+function limitText(plan: Plan, key: "clients" | "staff" | "submissions" | "storage") {
+  if (plan.slug === "enterprise") {
+    if (key === "clients") return "Unlimited clients";
+    if (key === "staff") return "Unlimited staff users";
+    if (key === "submissions") return "Unlimited submissions";
+    return "Custom storage";
+  }
+
+  if (key === "clients") return `${plan.clientLimit} clients`;
+  if (key === "staff") return `${plan.staffLimit} staff users`;
+  if (key === "submissions") return `${plan.monthlySubmissionLimit} monthly submissions`;
+  return `${plan.storageMbLimit} MB storage`;
+}
+
 export default function BillingSettingsPage() {
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  const currentPlanSlug = useMemo(
+    () => String(status?.planSlug || "").toLowerCase(),
+    [status?.planSlug]
+  );
 
   async function authorisedFetch(url: string, options: RequestInit = {}) {
     const token = getSupabaseAccessToken();
@@ -76,34 +120,49 @@ export default function BillingSettingsPage() {
     });
   }
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const firmId = getStoredFirmId();
-        const query = firmId ? `?firmId=${encodeURIComponent(firmId)}` : "";
+  async function reconcileSubscription(firmId: string) {
+    try {
+      await authorisedFetch("/api/billing/reconcile-subscription", {
+        method: "POST",
+        body: JSON.stringify({ firmId }),
+      });
+    } catch {}
+  }
 
-        const [statusResponse, plansResponse] = await Promise.all([
-          authorisedFetch(`/api/billing/access-status${query}`, {
-            cache: "no-store",
-          }),
-          fetch("/api/billing/plans", {
-            cache: "no-store",
-          }),
-        ]);
+  async function loadBilling() {
+    try {
+      const firmId = getStoredFirmId();
+      const query = firmId ? `?firmId=${encodeURIComponent(firmId)}` : "";
 
-        const statusData = await statusResponse.json();
-        const plansData = await plansResponse.json();
+      const [statusResponse, plansResponse] = await Promise.all([
+        authorisedFetch(`/api/billing/access-status${query}`, { cache: "no-store" }),
+        fetch("/api/billing/plans", { cache: "no-store" }),
+      ]);
 
-        setStatus(statusData);
-        setPlans(plansData?.plans || []);
-      } catch {
-        setMessage("Unable to load billing information.");
-      } finally {
-        setLoading(false);
+      let statusData = await statusResponse.json();
+      const plansData = await plansResponse.json();
+
+      if (!statusData?.allowed && statusData?.firmId) {
+        await reconcileSubscription(statusData.firmId);
+
+        const refreshed = await authorisedFetch(`/api/billing/access-status${query}`, {
+          cache: "no-store",
+        });
+
+        statusData = await refreshed.json();
       }
-    }
 
-    load();
+      setStatus(statusData);
+      setPlans(plansData?.plans || []);
+    } catch {
+      setMessage("Unable to load billing information.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadBilling();
   }, []);
 
   async function startCheckout(planSlug: string) {
@@ -120,10 +179,7 @@ export default function BillingSettingsPage() {
     try {
       const response = await authorisedFetch("/api/billing/create-checkout-session", {
         method: "POST",
-        body: JSON.stringify({
-          firmId,
-          planSlug,
-        }),
+        body: JSON.stringify({ firmId, planSlug }),
       });
 
       const data = await response.json();
@@ -140,7 +196,7 @@ export default function BillingSettingsPage() {
     }
   }
 
-  async function openBillingPortal() {
+  async function openBillingPortal(action: string = "portal") {
     const firmId = status?.firmId || getStoredFirmId();
 
     if (!firmId) {
@@ -148,7 +204,7 @@ export default function BillingSettingsPage() {
       return;
     }
 
-    setActionLoading("portal");
+    setActionLoading(action);
     setMessage(null);
 
     try {
@@ -171,12 +227,64 @@ export default function BillingSettingsPage() {
     }
   }
 
+  function contactSales() {
+    const subject = encodeURIComponent("Hala Digital Enterprise Plan");
+    const body = encodeURIComponent(
+      `Hi Hala Digital,\n\nI would like to discuss the Enterprise plan for my firm.\n\nFirm ID: ${status?.firmId || ""}\nCurrent plan: ${currentPlanSlug || "none"}\n\nThanks.`
+    );
+
+    window.location.href = `mailto:info@haladigital.co.uk?subject=${subject}&body=${body}`;
+  }
+
+  function buttonForPlan(plan: Plan) {
+    const isCurrent = currentPlanSlug === plan.slug && status?.allowed;
+    const hasActiveSubscription = Boolean(status?.allowed && currentPlanSlug);
+    const isEnterprise = plan.slug === "enterprise";
+
+    if (isCurrent) {
+      return {
+        label: "Current plan",
+        disabled: true,
+        onClick: () => {},
+        loadingKey: plan.slug,
+      };
+    }
+
+    if (isEnterprise) {
+      return {
+        label: "Contact sales",
+        disabled: false,
+        onClick: contactSales,
+        loadingKey: "enterprise-sales",
+      };
+    }
+
+    if (hasActiveSubscription) {
+      const direction =
+        PLAN_RANK[plan.slug] > PLAN_RANK[currentPlanSlug] ? "Upgrade plan" : "Change plan";
+
+      return {
+        label: direction,
+        disabled: false,
+        onClick: () => openBillingPortal(`change-${plan.slug}`),
+        loadingKey: `change-${plan.slug}`,
+      };
+    }
+
+    return {
+      label: plan.stripePriceId ? "Activate plan" : "Stripe price missing",
+      disabled: !plan.stripePriceId,
+      onClick: () => startCheckout(plan.slug),
+      loadingKey: plan.slug,
+    };
+  }
+
   return (
-    <main style={{ padding: 32, maxWidth: 1100, margin: "0 auto" }}>
+    <main style={{ padding: 32, maxWidth: 1180, margin: "0 auto" }}>
       <div
         style={{
           border: "1px solid #e5e7eb",
-          borderRadius: 16,
+          borderRadius: 18,
           padding: 28,
           background: "white",
           boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
@@ -186,8 +294,8 @@ export default function BillingSettingsPage() {
         <h1 style={{ fontSize: 30, marginBottom: 8 }}>Hala Digital Billing</h1>
 
         <p style={{ color: "#4b5563", marginBottom: 24 }}>
-          Accounting firms need an active Hala Digital subscription to access
-          clients, HMRC workflows, MTD submissions and practice tools.
+          Firm-level SaaS subscription control for MTD ITSA workflows, client access,
+          HMRC submissions, evidence vault and practice operations.
         </p>
 
         {loading ? (
@@ -196,32 +304,60 @@ export default function BillingSettingsPage() {
           <>
             <div
               style={{
-                padding: 16,
-                borderRadius: 12,
-                background: status?.allowed ? "#ecfdf5" : "#fef2f2",
-                border: status?.allowed
-                  ? "1px solid #a7f3d0"
-                  : "1px solid #fecaca",
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: 12,
                 marginBottom: 18,
               }}
             >
-              <strong>Status: </strong>
-              {status?.allowed ? "Access active" : "Access denied"}
-              <br />
-              <strong>Billing status: </strong>
-              {status?.billingStatus || "none"}
-              <br />
-              {!status?.allowed && (
-                <>
-                  <strong>Reason: </strong>
-                  {status?.reason || "billing_required"}
-                </>
-              )}
+              <div
+                style={{
+                  padding: 16,
+                  borderRadius: 12,
+                  background: status?.allowed ? "#ecfdf5" : "#fef2f2",
+                  border: status?.allowed ? "1px solid #a7f3d0" : "1px solid #fecaca",
+                }}
+              >
+                <strong>Status</strong>
+                <div>{status?.allowed ? "Access active" : "Access restricted"}</div>
+              </div>
+
+              <div
+                style={{
+                  padding: 16,
+                  borderRadius: 12,
+                  background: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                <strong>Billing status</strong>
+                <div>{status?.billingStatus || "none"}</div>
+              </div>
+
+              <div
+                style={{
+                  padding: 16,
+                  borderRadius: 12,
+                  background: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                <strong>Current plan</strong>
+                <div style={{ textTransform: "capitalize" }}>
+                  {currentPlanSlug || "No active plan"}
+                </div>
+              </div>
             </div>
 
-            {status?.allowed ? (
+            {!status?.allowed && (
+              <p style={{ color: "#991b1b", marginBottom: 12 }}>
+                Reason: {status?.reason || "billing_required"}
+              </p>
+            )}
+
+            {status?.allowed && (
               <button
-                onClick={openBillingPortal}
+                onClick={() => openBillingPortal("portal")}
                 disabled={actionLoading === "portal"}
                 style={{
                   padding: "12px 18px",
@@ -230,19 +366,14 @@ export default function BillingSettingsPage() {
                   background: "#111827",
                   color: "white",
                   fontWeight: 700,
+                  cursor: "pointer",
                 }}
               >
                 {actionLoading === "portal" ? "Opening..." : "Manage billing"}
               </button>
-            ) : (
-              <p style={{ color: "#991b1b" }}>
-                Select a plan below to activate access.
-              </p>
             )}
 
-            {message && (
-              <p style={{ color: "#b91c1c", marginTop: 16 }}>{message}</p>
-            )}
+            {message && <p style={{ color: "#b91c1c", marginTop: 16 }}>{message}</p>}
           </>
         )}
       </div>
@@ -250,65 +381,90 @@ export default function BillingSettingsPage() {
       <section
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
           gap: 18,
         }}
       >
-        {plans.map((plan) => (
-          <div
-            key={plan.slug}
-            style={{
-              border: "1px solid #e5e7eb",
-              borderRadius: 16,
-              padding: 22,
-              background: "white",
-              boxShadow: "0 8px 24px rgba(0,0,0,0.05)",
-            }}
-          >
-            <h2 style={{ fontSize: 22, marginBottom: 6 }}>{plan.name}</h2>
+        {plans.map((plan) => {
+          const button = buttonForPlan(plan);
+          const isCurrent = currentPlanSlug === plan.slug && status?.allowed;
 
-            <p style={{ color: "#4b5563", minHeight: 42 }}>
-              {plan.description || "Firm-level Hala Digital access"}
-            </p>
-
-            <div style={{ fontSize: 28, fontWeight: 800, margin: "14px 0" }}>
-              {plan.monthlyPriceGbp
-                ? `GBP ${plan.monthlyPriceGbp}/mo`
-                : "Custom"}
-            </div>
-
-            <ul style={{ paddingLeft: 18, lineHeight: 1.8 }}>
-              <li>{plan.clientLimit} clients</li>
-              <li>{plan.staffLimit} staff users</li>
-              <li>{plan.monthlySubmissionLimit} monthly submissions</li>
-              <li>{plan.storageMbLimit} MB storage</li>
-            </ul>
-
-            <button
-              onClick={() => startCheckout(plan.slug)}
-              disabled={!plan.stripePriceId || actionLoading === plan.slug}
+          return (
+            <div
+              key={plan.slug}
               style={{
-                width: "100%",
-                padding: "12px 16px",
-                borderRadius: 10,
-                border: "none",
-                background: plan.stripePriceId ? "#111827" : "#9ca3af",
-                color: "white",
-                fontWeight: 700,
-                marginTop: 14,
-                cursor: plan.stripePriceId ? "pointer" : "not-allowed",
+                position: "relative",
+                border: isCurrent ? "2px solid #111827" : "1px solid #e5e7eb",
+                borderRadius: 18,
+                padding: 22,
+                background: isCurrent ? "#f8fafc" : "white",
+                boxShadow: isCurrent
+                  ? "0 14px 32px rgba(17,24,39,0.12)"
+                  : "0 8px 24px rgba(0,0,0,0.05)",
               }}
             >
-              {actionLoading === plan.slug
-                ? "Starting..."
-                : plan.stripePriceId
-                  ? "Activate plan"
-                  : "Stripe price missing"}
-            </button>
-          </div>
-        ))}
+              {isCurrent && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 14,
+                    right: 14,
+                    padding: "5px 10px",
+                    borderRadius: 999,
+                    background: "#111827",
+                    color: "white",
+                    fontSize: 12,
+                    fontWeight: 800,
+                  }}
+                >
+                  ACTIVE
+                </div>
+              )}
+
+              <h2 style={{ fontSize: 22, marginBottom: 6 }}>{plan.name}</h2>
+
+              <p style={{ color: "#4b5563", minHeight: 44 }}>
+                {plan.description || "Firm-level Hala Digital access"}
+              </p>
+
+              <div style={{ fontSize: 30, fontWeight: 900, margin: "14px 0" }}>
+                {money(plan)}
+              </div>
+
+              <ul style={{ paddingLeft: 18, lineHeight: 1.9 }}>
+                <li>{limitText(plan, "clients")}</li>
+                <li>{limitText(plan, "staff")}</li>
+                <li>{limitText(plan, "submissions")}</li>
+                <li>{limitText(plan, "storage")}</li>
+              </ul>
+
+              <button
+                onClick={button.onClick}
+                disabled={button.disabled || actionLoading === button.loadingKey}
+                style={{
+                  width: "100%",
+                  padding: "12px 16px",
+                  borderRadius: 10,
+                  border: isCurrent ? "1px solid #111827" : "none",
+                  background: isCurrent
+                    ? "#e5e7eb"
+                    : button.disabled
+                      ? "#9ca3af"
+                      : plan.slug === "enterprise"
+                        ? "#065f46"
+                        : "#111827",
+                  color: isCurrent ? "#111827" : "white",
+                  fontWeight: 800,
+                  marginTop: 14,
+                  cursor: button.disabled ? "not-allowed" : "pointer",
+                }}
+              >
+                {actionLoading === button.loadingKey ? "Opening..." : button.label}
+              </button>
+            </div>
+          );
+        })}
       </section>
     </main>
   );
 }
-
