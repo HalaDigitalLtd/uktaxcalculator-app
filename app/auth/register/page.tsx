@@ -65,57 +65,41 @@ export default function RegisterPage() {
 
     try {
       if (inviteData) {
-        const { data, error } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-        });
+  const response = await fetch("/api/auth/accept-invite", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      email: cleanEmail,
+      password,
+      inviteToken,
+    }),
+  });
 
-        if (error) throw error;
+  const payload = await response.json();
 
-        const userId = data.user?.id;
+  if (!response.ok || !payload.success) {
+    throw new Error(payload.message || "Unable to join firm.");
+  }
 
-        if (!userId) {
-          throw new Error("User not created properly.");
-        }
+  const { error: loginError } = await supabase.auth.signInWithPassword({
+    email: cleanEmail,
+    password,
+  });
 
-        const invitedRole = inviteData.role || "staff";
+  if (loginError) {
+    window.location.href = "/auth/login";
+    return;
+  }
 
-        const { error: linkError } = await supabase
-          .from("firm_users")
-          .upsert(
-            {
-              firm_id: inviteData.firm_id,
-              user_id: userId,
-              email: cleanEmail,
-              role: invitedRole,
-              is_active: true,
-              status: "active",
-              invited_by: inviteData.invited_by || null,
-              approved_by: inviteData.invited_by || null,
-              updated_at: new Date().toISOString(),
-              meta: {
-                source: "invite_acceptance",
-                invitation_id: inviteData.id,
-                membership_status: "accepted",
-                accepted_at: new Date().toISOString(),
-              },
-            },
-            { onConflict: "firm_id,user_id" }
-          );
+  if (payload.firmId) {
+    localStorage.setItem("active_firm_id", payload.firmId);
+  }
 
-        if (linkError) throw linkError;
-
-        await supabase
-          .from("firm_invitations")
-          .update({
-            accepted_at: new Date().toISOString(),
-            accepted_by: userId,
-          })
-          .eq("id", inviteData.id);
-
-        window.location.href = "/dashboard/clients";
-        return;
-      }
+  window.location.href = "/dashboard/clients";
+  return;
+}
 
       const response = await fetch("/api/auth/register-workspace", {
         method: "POST",
