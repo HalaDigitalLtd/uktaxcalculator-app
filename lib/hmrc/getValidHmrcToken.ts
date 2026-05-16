@@ -98,13 +98,19 @@ async function getClientTokenRow(clientId: string) {
       "id, firm_id, hmrc_access_token, hmrc_refresh_token, hmrc_token_expires_at",
     )
     .eq("id", clientId)
-    .single();
+    .limit(1);
 
   if (error) {
-    throw new Error(`Client not found or unreadable: ${error.message}`);
+    throw new Error(`Client lookup failed: ${error.message}`);
   }
 
-  return data as ClientTokenRow;
+  const client = (data || [])[0];
+
+  if (!client) {
+    throw new Error("Client not found");
+  }
+
+  return client as ClientTokenRow;
 }
 
 async function getLatestFirmConnection(firmId: string | null) {
