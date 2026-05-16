@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -221,7 +221,7 @@ export default function DashboardClientsPage() {
         label: "Archived",
         bg: "#f2f4f7",
         color: "#475467",
-        icon: "•",
+        icon: "â€¢",
         detail: "Hidden from active list",
       };
     }
@@ -241,7 +241,7 @@ export default function DashboardClientsPage() {
         label: "Submitted",
         bg: "#ecfdf3",
         color: "#067647",
-        icon: "✓",
+        icon: "âœ“",
         detail: "Final declaration submitted",
       };
     }
@@ -286,7 +286,7 @@ export default function DashboardClientsPage() {
         label: "Open obligations",
         bg: "#eff8ff",
         color: "#175cd3",
-        icon: "•",
+        icon: "â€¢",
         detail: `${openObligations.length} open`,
       };
     }
@@ -295,7 +295,7 @@ export default function DashboardClientsPage() {
       label: "Up to date",
       bg: "#ecfdf3",
       color: "#067647",
-      icon: "✓",
+      icon: "âœ“",
       detail: "No urgent action",
     };
   };
@@ -762,7 +762,7 @@ export default function DashboardClientsPage() {
                     </div>
 
                     <div style={styles.clientMeta}>
-                      {getClientEmail(c)} · {getClientType(c)}
+                      {getClientEmail(c)} Â· {getClientType(c)}
                     </div>
                   </div>
 
@@ -770,7 +770,7 @@ export default function DashboardClientsPage() {
                     <div style={styles.taxLine}>NINO: {c.nino || "Missing"}</div>
                     <div style={styles.taxLine}>UTR: {c.utr || "Missing"}</div>
                     <div style={styles.taxLine}>
-                      Years: {taxYears.length} · Open: {openObligations.length}
+                      Years: {taxYears.length} Â· Open: {openObligations.length}
                     </div>
 
                     {c.hmrc_authorisation_status && (
@@ -997,14 +997,15 @@ const styles: Record<string, React.CSSProperties> = {
   table: {
     marginTop: 12,
     border: "1px solid #eef1f5",
-    borderRadius: 14,
+    borderRadius: 15,
     overflow: "hidden",
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.025)",
   },
   tableHead: {
     display: "grid",
-    gridTemplateColumns: "1.25fr 1fr .75fr auto",
+    gridTemplateColumns: "minmax(240px, 1.35fr) minmax(210px, 1fr) minmax(150px, .75fr) auto",
     gap: 12,
-    padding: "9px 11px",
+    padding: "10px 12px",
     background: "#f8fafc",
     borderBottom: "1px solid #eef1f5",
     color: "#64748b",
@@ -1015,12 +1016,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   clientRow: {
     display: "grid",
-    gridTemplateColumns: "1.25fr 1fr .75fr auto",
+    gridTemplateColumns: "minmax(240px, 1.35fr) minmax(210px, 1fr) minmax(150px, .75fr) auto",
     gap: 12,
     alignItems: "center",
-    padding: "10px 11px",
+    padding: "11px 12px",
     borderBottom: "1px solid #eef1f5",
     background: "#ffffff",
+    transition: "background 120ms ease, box-shadow 120ms ease",
   },
   clientMain: {
     minWidth: 0,
@@ -1033,14 +1035,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   clientTitle: {
     color: "#111827",
-    fontSize: 13.5,
+    fontSize: 13.25,
     fontWeight: 850,
     textDecoration: "none",
   },
   clientMeta: {
     marginTop: 4,
     color: "#667085",
-    fontSize: 11.5,
+    fontSize: 11.25,
+    lineHeight: 1.35,
   },
   taxLine: {
     color: "#475467",
@@ -1092,7 +1095,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "white",
     color: "#172033",
     borderRadius: 9,
-    padding: "7px 10px",
+    padding: "7px 11px",
     fontWeight: 800,
     border: "1px solid #d7dde7",
     cursor: "pointer",
@@ -1103,7 +1106,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#175cd3",
     border: "1px solid #b2ddff",
     borderRadius: 9,
-    padding: "7px 10px",
+    padding: "7px 11px",
     fontWeight: 800,
     cursor: "pointer",
     textDecoration: "none",
@@ -1116,7 +1119,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#172033",
     color: "white",
     borderRadius: 9,
-    padding: "7px 10px",
+    padding: "7px 11px",
     fontWeight: 800,
     textDecoration: "none",
     display: "inline-flex",
@@ -1131,7 +1134,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#92400e",
     border: "1px solid #fedf89",
     borderRadius: 9,
-    padding: "7px 10px",
+    padding: "7px 11px",
     fontWeight: 800,
     cursor: "pointer",
     fontSize: 11.5,
@@ -1148,7 +1151,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#172033",
     color: "white",
     borderRadius: 8,
-    padding: "6px 9px",
+    padding: "6px 10px",
     fontWeight: 850,
     textDecoration: "none",
     fontSize: 11,
@@ -1158,7 +1161,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#172033",
     border: "1px solid #d7dde7",
     borderRadius: 8,
-    padding: "6px 9px",
+    padding: "6px 10px",
     fontWeight: 850,
     textDecoration: "none",
     fontSize: 11,
@@ -1168,7 +1171,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#92400e",
     border: "1px solid #fedf89",
     borderRadius: 8,
-    padding: "6px 9px",
+    padding: "6px 10px",
     fontWeight: 850,
     cursor: "pointer",
     fontSize: 11,
@@ -1178,7 +1181,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#067647",
     border: "1px solid #abefc6",
     borderRadius: 8,
-    padding: "6px 9px",
+    padding: "6px 10px",
     fontWeight: 850,
     cursor: "pointer",
     fontSize: 11,
@@ -1188,7 +1191,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#991b1b",
     border: "1px solid #fecaca",
     borderRadius: 8,
-    padding: "6px 9px",
+    padding: "6px 10px",
     fontWeight: 850,
     cursor: "pointer",
     fontSize: 11,
@@ -1203,6 +1206,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 22,
     textAlign: "center",
     background: "#fbfcfd",
+    borderTop: "1px solid #eef1f5",
     color: "#667085",
     fontSize: 12,
   },
