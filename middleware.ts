@@ -1,20 +1,5 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PATHS = [
-  "/",
-  "/auth/login",
-  "/auth/register",
-  "/privacy",
-  "/terms",
-  "/contact",
-];
-
-function isPublicPath(pathname: string) {
-  return PUBLIC_PATHS.some(
-    (path) => pathname === path || pathname.startsWith(path + "/")
-  );
-}
-
 function isStaticAsset(pathname: string) {
   return (
     pathname.startsWith("/_next") ||
@@ -23,29 +8,34 @@ function isStaticAsset(pathname: string) {
   );
 }
 
+function isAppSubdomain(host: string) {
+  return host.startsWith("app.haladigital.co.uk");
+}
+
+function isMarketingDomain(host: string) {
+  return host === "haladigital.co.uk" || host === "www.haladigital.co.uk";
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const host = request.headers.get("host") || "";
 
   if (isStaticAsset(pathname)) {
     return NextResponse.next();
   }
 
-  const hasSupabaseAuth =
-    request.cookies
-      .getAll()
-      .some((cookie) => cookie.name.includes("sb-")) || false;
+  if (isMarketingDomain(host)) {
+    if (pathname.startsWith("/dashboard") || pathname.startsWith("/app")) {
+      return NextResponse.redirect(
+        new URL("https://app.haladigital.co.uk/auth/login")
+      );
+    }
 
-  const isPublic = isPublicPath(pathname);
-
-  if (!hasSupabaseAuth && !isPublic) {
-    return NextResponse.redirect(new URL("/auth/login", request.url));
+    return NextResponse.next();
   }
 
-  if (
-    hasSupabaseAuth &&
-    (pathname === "/auth/login" || pathname === "/auth/register")
-  ) {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
+  if (isAppSubdomain(host)) {
+    return NextResponse.next();
   }
 
   return NextResponse.next();
