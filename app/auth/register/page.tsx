@@ -1,27 +1,7 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
-
-const TRIAL_DAYS = 14;
-
-function buildFirmSlug(value: string) {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-") +
-    "-" +
-    Date.now()
-  );
-}
-
-function buildTrialEndDate() {
-  const date = new Date();
-  date.setDate(date.getDate() + TRIAL_DAYS);
-  return date.toISOString();
-}
 
 export default function RegisterPage() {
   const [email, setEmail] = useState("");
@@ -84,22 +64,20 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      const userId = data.user?.id;
-
-      if (!userId) {
-        throw new Error("User not created properly.");
-      }
-
       if (inviteData) {
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+        });
+
+        if (error) throw error;
+
+        const userId = data.user?.id;
+
+        if (!userId) {
+          throw new Error("User not created properly.");
+        }
+
         const invitedRole = inviteData.role || "staff";
 
         const { error: linkError } = await supabase
@@ -125,9 +103,7 @@ export default function RegisterPage() {
             { onConflict: "firm_id,user_id" }
           );
 
-        if (linkError) {
-          throw linkError;
-        }
+        if (linkError) throw linkError;
 
         await supabase
           .from("firm_invitations")
@@ -141,114 +117,37 @@ export default function RegisterPage() {
         return;
       }
 
-      const slug = buildFirmSlug(cleanFirmName);
+      const response = await fetch("/api/auth/register-workspace", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          firmName: cleanFirmName,
+        }),
+      });
 
-      const { data: firmData, error: firmError } = await supabase
-        .from("firms")
-        .insert([
-          {
-            name: cleanFirmName,
-            slug,
-            onboarding_status: "firm_created",
-            onboarding_metadata: {
-              source: "self_registration",
-              registration_completed_at: new Date().toISOString(),
-              onboarding_version: 1,
-            },
-          },
-        ])
-        .select()
-        .single();
+      const payload = await response.json();
 
-      if (firmError) {
-        throw firmError;
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.message || "Registration failed.");
       }
 
-      const { error: membershipError } = await supabase
-        .from("firm_users")
-        .insert([
-          {
-            firm_id: firmData.id,
-            user_id: userId,
-            email: cleanEmail,
-            role: "admin",
-            is_active: true,
-            status: "active",
-            approved_by: userId,
-            meta: {
-              source: "firm_registration",
-              membership_status: "accepted",
-              accepted_at: new Date().toISOString(),
-              production_note:
-                "Initial firm administrator created during SaaS onboarding",
-            },
-          },
-        ]);
+      const { error: loginError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
 
-      if (membershipError) {
-        throw membershipError;
+      if (loginError) {
+        window.location.href = "/auth/login";
+        return;
       }
 
-      const { data: starterPlan, error: starterPlanError } = await supabase
-        .from("subscription_plans")
-        .select("id")
-        .eq("slug", "starter")
-        .maybeSingle();
-
-      if (starterPlanError) {
-        throw starterPlanError;
+      if (payload.firmId) {
+        localStorage.setItem("active_firm_id", payload.firmId);
       }
-
-      if (!starterPlan?.id) {
-        throw new Error("Starter subscription plan not configured.");
-      }
-
-      const trialEndsAt = buildTrialEndDate();
-
-      const { error: subscriptionError } = await supabase
-        .from("firm_subscriptions")
-        .upsert(
-          {
-            firm_id: firmData.id,
-            plan_id: starterPlan.id,
-            status: "trialing",
-            billing_status: "trialing",
-            access_status: "active",
-            onboarding_status: "trial_active",
-            billing_lifecycle_state: "trial",
-            trial_started_at: new Date().toISOString(),
-            trial_ends_at: trialEndsAt,
-            onboarding_metadata: {
-              source: "self_registration",
-              auto_trial_provisioned: true,
-              trial_days: TRIAL_DAYS,
-            },
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "firm_id",
-          }
-        );
-
-      if (subscriptionError) {
-        throw subscriptionError;
-      }
-
-      await supabase
-        .from("firms")
-        .update({
-          onboarding_status: "trial_provisioned",
-          onboarding_completed_at: new Date().toISOString(),
-          onboarding_metadata: {
-            source: "self_registration",
-            onboarding_version: 1,
-            trial_provisioned: true,
-            completed_at: new Date().toISOString(),
-          },
-        })
-        .eq("id", firmData.id);
-
-      localStorage.setItem("active_firm_id", firmData.id);
 
       window.location.href = "/dashboard/clients";
     } catch (error: any) {
@@ -259,44 +158,29 @@ export default function RegisterPage() {
 
   if (checkingInvite) {
     return (
-      <main style={{ minHeight: "100vh", background: "#f6f8fb", padding: 40 }}>
-        Loading...
+      <main style={styles.page}>
+        <div style={styles.card}>Loading...</div>
       </main>
     );
   }
 
   return (
-    <main style={{ minHeight: "100vh", background: "#f6f8fb", padding: 40 }}>
-      <div
-        style={{
-          maxWidth: 520,
-          margin: "80px auto",
-          background: "white",
-          padding: 30,
-          borderRadius: 16,
-          border: "1px solid #e5e7eb",
-        }}
-      >
-        <h1 style={{ marginBottom: 8 }}>
+    <main style={styles.page}>
+      <div style={styles.card}>
+        <p style={styles.kicker}>Hala Digital SaaS</p>
+
+        <h1 style={styles.title}>
           {inviteData ? "Join Firm" : "Start Your Practice Workspace"}
         </h1>
 
-        <p style={{ color: "#64748b", fontSize: 14, marginBottom: 20 }}>
+        <p style={styles.subtitle}>
           {inviteData
             ? "Create your user account to join the firm workspace."
             : "Create your Hala Digital accountant SaaS workspace."}
         </p>
 
         {!inviteData && (
-          <div
-            style={{
-              background: "#ecfeff",
-              border: "1px solid #a5f3fc",
-              borderRadius: 12,
-              padding: 14,
-              marginBottom: 18,
-            }}
-          >
+          <div style={styles.includeBox}>
             <strong>Includes:</strong>
             <ul style={{ marginBottom: 0 }}>
               <li>14-day SaaS trial</li>
@@ -308,15 +192,7 @@ export default function RegisterPage() {
         )}
 
         {inviteData && (
-          <div
-            style={{
-              background: "#f8fafc",
-              border: "1px solid #e5e7eb",
-              borderRadius: 12,
-              padding: 14,
-              marginBottom: 18,
-            }}
-          >
+          <div style={styles.inviteBox}>
             <p style={{ marginTop: 0 }}>
               <strong>Invited Email:</strong> {inviteData.email}
             </p>
@@ -331,7 +207,7 @@ export default function RegisterPage() {
             placeholder="Firm Name"
             value={firmName}
             onChange={(e) => setFirmName(e.target.value)}
-            style={inputStyle}
+            style={styles.input}
           />
         )}
 
@@ -341,7 +217,7 @@ export default function RegisterPage() {
           disabled={!!inviteData}
           onChange={(e) => setEmail(e.target.value)}
           style={{
-            ...inputStyle,
+            ...styles.input,
             background: inviteData ? "#f3f4f6" : "white",
           }}
         />
@@ -354,20 +230,15 @@ export default function RegisterPage() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !loading) handleRegister();
           }}
-          style={inputStyle}
+          style={styles.input}
         />
 
         <button
           onClick={handleRegister}
           disabled={loading}
           style={{
-            width: "100%",
-            padding: "11px 14px",
+            ...styles.button,
             background: loading ? "#94a3b8" : "#0f172a",
-            color: "white",
-            border: "none",
-            borderRadius: 10,
-            fontWeight: 800,
             cursor: loading ? "not-allowed" : "pointer",
           }}
         >
@@ -378,7 +249,7 @@ export default function RegisterPage() {
               : "Start Free Trial"}
         </button>
 
-        <p style={{ marginTop: 16, fontSize: 14 }}>
+        <p style={styles.loginText}>
           Already have an account?{" "}
           <a
             href={
@@ -386,7 +257,7 @@ export default function RegisterPage() {
                 ? `/auth/login?invite=${inviteToken}`
                 : "/auth/login"
             }
-            style={{ color: "#2563eb", fontWeight: 700 }}
+            style={styles.loginLink}
           >
             Login
           </a>
@@ -396,10 +267,78 @@ export default function RegisterPage() {
   );
 }
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: 11,
-  marginBottom: 12,
-  borderRadius: 8,
-  border: "1px solid #d1d5db",
+const styles: Record<string, React.CSSProperties> = {
+  page: {
+    minHeight: "100vh",
+    background: "linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%)",
+    padding: 40,
+    fontFamily: "Inter, Arial, sans-serif",
+    color: "#0f172a",
+  },
+  card: {
+    maxWidth: 520,
+    margin: "80px auto",
+    background: "white",
+    padding: 30,
+    borderRadius: 18,
+    border: "1px solid #e5eaf1",
+    boxShadow: "0 20px 50px rgba(15, 23, 42, 0.08)",
+  },
+  kicker: {
+    margin: 0,
+    color: "#175cd3",
+    fontSize: 12,
+    fontWeight: 850,
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+  },
+  title: {
+    margin: "8px 0 8px",
+    fontSize: 34,
+    lineHeight: 1.05,
+    letterSpacing: "-0.04em",
+  },
+  subtitle: {
+    color: "#64748b",
+    fontSize: 14,
+    marginBottom: 20,
+  },
+  includeBox: {
+    background: "#ecfeff",
+    border: "1px solid #a5f3fc",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 18,
+  },
+  inviteBox: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 18,
+  },
+  input: {
+    width: "100%",
+    padding: 11,
+    marginBottom: 12,
+    borderRadius: 9,
+    border: "1px solid #d1d5db",
+    boxSizing: "border-box",
+  },
+  button: {
+    width: "100%",
+    padding: "12px 14px",
+    color: "white",
+    border: "none",
+    borderRadius: 10,
+    fontWeight: 850,
+  },
+  loginText: {
+    marginTop: 16,
+    fontSize: 14,
+  },
+  loginLink: {
+    color: "#2563eb",
+    fontWeight: 700,
+  },
 };
