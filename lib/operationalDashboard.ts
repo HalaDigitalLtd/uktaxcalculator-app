@@ -35,7 +35,7 @@ export type OperationalDashboardResponse = {
 };
 
 function todayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 5);
 }
 
 function asArray<T>(value: T[] | null | undefined): T[] {
@@ -259,7 +259,7 @@ export async function getOperationalDashboard(
     ...snapshots.filter((snapshot) => !snapshot.hmrc_correlation_id && !snapshot.hmrc_submission_id),
   ];
 
-  const failedSubmissionItems = failedLogs.slice(0, 8).map((log) =>
+  const failedSubmissionItems = failedLogs.slice(0, 3).map((log) =>
     makeItem(log, {
       title: `${safeText(log.business_type || log.submission_type, "HMRC")} submission issue`,
       description: safeText(
@@ -272,7 +272,7 @@ export async function getOperationalDashboard(
     })
   );
 
-  const partnerApprovalItems = partnerApprovals.slice(0, 8).map((row) =>
+  const partnerApprovalItems = partnerApprovals.slice(0, 3).map((row) =>
     makeItem(row, {
       title: "Partner approval required",
       description: `Workflow status: ${safeText(row.status || row.workflow_status, "Pending review")}`,
@@ -282,7 +282,7 @@ export async function getOperationalDashboard(
     })
   );
 
-  const overdueObligationItems = overdueObligations.slice(0, 8).map((row) =>
+  const overdueObligationItems = overdueObligations.slice(0, 3).map((row) =>
     makeItem(row, {
       title: `${safeText(row.business_type || row.type_of_business || row.source_type, "MTD ITSA")} obligation overdue`,
       description: `Period ${safeText(row.period_start_date || row.start_date)} to ${safeText(
@@ -294,7 +294,7 @@ export async function getOperationalDashboard(
     })
   );
 
-  const hmrcSyncWarningItems = hmrcSyncWarnings.slice(0, 8).map((client) =>
+  const hmrcSyncWarningItems = hmrcSyncWarnings.slice(0, 3).map((client) =>
     makeItem(client, {
       title: getClientName(client),
       description: "Client may need HMRC profile/obligation sync review.",
@@ -304,7 +304,7 @@ export async function getOperationalDashboard(
     })
   );
 
-  const auditAlertItems = auditAlerts.slice(0, 8).map((row) =>
+  const auditAlertItems = auditAlerts.slice(0, 3).map((row) =>
     makeItem(row, {
       title: row.submission_type ? "Evidence snapshot warning" : "Workflow lock warning",
       description: row.submission_type
@@ -340,7 +340,7 @@ export async function getOperationalDashboard(
     ),
   ]
     .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
-    .slice(0, 10);
+    .slice(0, 5);
 
   return {
     success: true,
@@ -395,3 +395,4 @@ export async function getOperationalDashboard(
     warnings,
   };
 }
+

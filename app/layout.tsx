@@ -1,11 +1,11 @@
-import ClientChrome from "./components/ClientChrome";
+﻿import ClientChrome from "./components/ClientChrome";
 import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "UK Tax Calculator 2025/26 | Hala Digital Ltd",
+  title: "Hala Digital Accountant OS",
   description:
-    "A UK tax calculator and tax tools platform for individuals, businesses and accountancy practices.",
+    "Enterprise accountant operating system for HMRC workflows, MTD ITSA, compliance, billing and practice operations.",
 };
 
 export default function RootLayout({
@@ -15,7 +15,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
+      <body
+        style={{
+          margin: 0,
+          background: "#f8fafc",
+          color: "#0f172a",
+          fontFamily:
+            'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}
+      >
         <ClientChrome>{children}</ClientChrome>
       </body>
     </html>

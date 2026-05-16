@@ -2,167 +2,97 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { dashboardTheme as t } from "../../lib/dashboardTheme";
 
 const navItems = [
-  {
-    title: "Workspace",
-    items: [
-      { href: "/dashboard", label: "Dashboard" },
-      { href: "/dashboard/clients", label: "Clients" },
-      { href: "/dashboard/hmrc-connect", label: "HMRC Connections" },
-      { href: "/dashboard/team", label: "Team" },
-    ],
-  },
-  {
-    title: "Operations",
-    items: [
-      { href: "/dashboard/forensics", label: "Forensics" },
-      { href: "/dashboard/settings/billing", label: "Billing" },
-      { href: "/dashboard/settings", label: "Settings" },
-    ],
-  },
+  { href: "/dashboard", label: "Overview" },
+  { href: "/dashboard/clients", label: "Clients" },
+  { href: "/dashboard/hmrc-connect", label: "HMRC" },
+  { href: "/dashboard/team", label: "Team" },
+  { href: "/dashboard/forensics", label: "Forensics" },
+  { href: "/dashboard/settings/billing", label: "Billing" },
+  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export default function DashboardSidebar() {
   const pathname = usePathname();
 
   return (
-    <aside
-      style={{
-        width: 290,
-        background: "#07111f",
-        color: "white",
-        borderRight: "1px solid rgba(255,255,255,0.06)",
-        display: "flex",
-        flexDirection: "column",
-        padding: 24,
-      }}
-    >
-      <div style={{ marginBottom: 34 }}>
-        <p
-          style={{
-            fontSize: 12,
-            letterSpacing: 2,
-            textTransform: "uppercase",
-            color: "#67e8f9",
-            marginBottom: 8,
-            fontWeight: 800,
-          }}
-        >
+    <aside style={{
+      width: 232,
+      minWidth: 232,
+      height: "100vh",
+      position: "sticky",
+      top: 0,
+      background: "linear-gradient(180deg,#f8fafc 0%, #edf3f8 100%)",
+      color: t.text,
+      padding: 18,
+      display: "flex",
+      flexDirection: "column",
+      boxSizing: "border-box",
+      borderRight: `1px solid ${t.sidebarBorder}`,
+    }}>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{
+          width: 38,
+          height: 38,
+          borderRadius: 14,
+          background: "linear-gradient(135deg,#dbeafe,#cffafe)",
+          color: "#0f4c81",
+          display: "grid",
+          placeItems: "center",
+          fontWeight: 950,
+          marginBottom: 14,
+          boxShadow: "0 8px 20px rgba(37,99,235,.10)",
+        }}>H</div>
+
+        <p style={{ margin: 0, color: "#64748b", fontSize: 11, fontWeight: 850, letterSpacing: 1.4, textTransform: "uppercase" }}>
           Hala Digital
         </p>
 
-        <h2
-          style={{
-            margin: 0,
-            fontSize: 24,
-            fontWeight: 900,
-          }}
-        >
+        <h1 style={{ margin: "6px 0 0", fontSize: 20, fontWeight: 900, letterSpacing: -0.5 }}>
           Practice OS
-        </h2>
+        </h1>
 
-        <p
-          style={{
-            color: "#94a3b8",
-            marginTop: 10,
-            lineHeight: 1.6,
-            fontSize: 14,
-          }}
-        >
-          Accountant-grade MTD ITSA operating platform.
+        <p style={{ margin: "9px 0 0", color: t.muted, fontSize: 12, lineHeight: 1.55 }}>
+          MTD ITSA operations, evidence and billing.
         </p>
       </div>
 
-      <div style={{ flex: 1 }}>
-        {navItems.map((section) => (
-          <div key={section.title} style={{ marginBottom: 28 }}>
-            <p
-              style={{
-                color: "#64748b",
-                fontSize: 12,
-                textTransform: "uppercase",
-                letterSpacing: 1,
-                marginBottom: 12,
-                fontWeight: 700,
-              }}
-            >
-              {section.title}
-            </p>
+      <nav style={{ display: "grid", gap: 4 }}>
+        {navItems.map((item) => {
+          const active = pathname === item.href || pathname.startsWith(item.href + "/");
 
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-              }}
-            >
-              {section.items.map((item) => {
-                const active =
-                  pathname === item.href ||
-                  pathname.startsWith(item.href + "/");
-
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    style={{
-                      padding: "12px 14px",
-                      borderRadius: 14,
-                      textDecoration: "none",
-                      color: active ? "#07111f" : "#e2e8f0",
-                      background: active
-                        ? "#67e8f9"
-                        : "transparent",
-                      fontWeight: active ? 800 : 600,
-                      transition: "0.2s ease",
-                    }}
-                  >
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div
-        style={{
-          borderTop: "1px solid rgba(255,255,255,0.08)",
-          paddingTop: 18,
-        }}
-      >
-        <div
-          style={{
-            background: "rgba(255,255,255,0.04)",
-            border: "1px solid rgba(255,255,255,0.06)",
-            borderRadius: 18,
-            padding: 16,
-          }}
-        >
-          <strong
-            style={{
-              display: "block",
-              marginBottom: 8,
-            }}
-          >
-            Production SaaS
-          </strong>
-
-          <p
-            style={{
-              margin: 0,
-              color: "#94a3b8",
+          return (
+            <Link key={item.href} href={item.href} style={{
+              textDecoration: "none",
+              color: active ? "#0f172a" : "#475569",
+              background: active ? "#ffffff" : "transparent",
+              border: active ? "1px solid #dbe4ee" : "1px solid transparent",
+              boxShadow: active ? "0 8px 20px rgba(15,23,42,.05)" : "none",
+              padding: "9px 11px",
+              borderRadius: 12,
               fontSize: 13,
-              lineHeight: 1.7,
-            }}
-          >
-            HMRC workflows, evidence controls, billing enforcement and practice operations.
-          </p>
-        </div>
+              fontWeight: active ? 850 : 650,
+            }}>
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      <div style={{
+        marginTop: "auto",
+        padding: 12,
+        borderRadius: 16,
+        background: "rgba(255,255,255,.76)",
+        border: "1px solid #dfe7f1",
+      }}>
+        <p style={{ margin: 0, fontSize: 12, fontWeight: 850 }}>Secure beta</p>
+        <p style={{ margin: "5px 0 0", color: t.muted, fontSize: 11, lineHeight: 1.45 }}>
+          Controlled accountant SaaS workspace.
+        </p>
       </div>
     </aside>
   );
 }
-

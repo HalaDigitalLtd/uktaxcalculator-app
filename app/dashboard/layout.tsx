@@ -1,9 +1,14 @@
-import StrictBillingGate from "../../components/billing/StrictBillingGate";
+﻿import StrictBillingGate from "../../components/billing/StrictBillingGate";
+import DashboardShell from "../../components/shell/DashboardShell";
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <StrictBillingGate>{children}</StrictBillingGate>;
+  return (
+    <StrictBillingGate>
+      <DashboardShell>{children}</DashboardShell>
+    </StrictBillingGate>
+  );
 }

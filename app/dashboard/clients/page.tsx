@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -84,17 +84,18 @@ function getClientType(c: any) {
 
 function isOpenStatus(status: any) {
   const s = String(status || "").toLowerCase();
-  return !["fulfilled", "submitted", "completed", "success", "accepted"].includes(
-    s
-  );
+  return !["fulfilled", "submitted", "completed", "success", "accepted"].includes(s);
 }
 
 function daysUntil(dateValue: any) {
   if (!dateValue) return null;
+
   const today = new Date();
   const due = new Date(dateValue);
+
   today.setHours(0, 0, 0, 0);
   due.setHours(0, 0, 0, 0);
+
   return Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 }
 
@@ -103,9 +104,11 @@ function downloadCSVTemplate() {
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
+
   a.href = url;
   a.download = "hala-mtd-client-import-template.csv";
   a.click();
+
   URL.revokeObjectURL(url);
 }
 
@@ -216,8 +219,8 @@ export default function DashboardClientsPage() {
     if (client.archived_at) {
       return {
         label: "Archived",
-        bg: "#e2e8f0",
-        color: "#475569",
+        bg: "#f2f4f7",
+        color: "#475467",
         icon: "•",
         detail: "Hidden from active list",
       };
@@ -227,6 +230,7 @@ export default function DashboardClientsPage() {
 
     const hasSubmittedFinalDeclaration = finalDeclarations.some((f: any) => {
       const status = String(f.status || f.review_state || "").toLowerCase();
+
       return ["submitted", "final_submitted", "complete", "completed"].includes(
         status
       );
@@ -235,8 +239,8 @@ export default function DashboardClientsPage() {
     if (hasSubmittedFinalDeclaration) {
       return {
         label: "Submitted",
-        bg: "#dcfce7",
-        color: "#166534",
+        bg: "#ecfdf3",
+        color: "#067647",
         icon: "✓",
         detail: "Final declaration submitted",
       };
@@ -255,9 +259,9 @@ export default function DashboardClientsPage() {
     if (overdueCount > 0) {
       return {
         label: "Overdue",
-        bg: "#fee2e2",
-        color: "#991b1b",
-        icon: "✕",
+        bg: "#fff1f2",
+        color: "#be123c",
+        icon: "!",
         detail: `${overdueCount} overdue`,
       };
     }
@@ -270,7 +274,7 @@ export default function DashboardClientsPage() {
     if (upcomingCount > 0) {
       return {
         label: "Needs attention",
-        bg: "#fef3c7",
+        bg: "#fffbeb",
         color: "#92400e",
         icon: "!",
         detail: `${upcomingCount} due soon`,
@@ -280,8 +284,8 @@ export default function DashboardClientsPage() {
     if (openObligations.length > 0) {
       return {
         label: "Open obligations",
-        bg: "#dbeafe",
-        color: "#1d4ed8",
+        bg: "#eff8ff",
+        color: "#175cd3",
         icon: "•",
         detail: `${openObligations.length} open`,
       };
@@ -289,8 +293,8 @@ export default function DashboardClientsPage() {
 
     return {
       label: "Up to date",
-      bg: "#dcfce7",
-      color: "#166534",
+      bg: "#ecfdf3",
+      color: "#067647",
       icon: "✓",
       detail: "No urgent action",
     };
@@ -609,9 +613,7 @@ export default function DashboardClientsPage() {
   if (loading) {
     return (
       <main style={styles.page}>
-        <div style={styles.container}>
-          <p>Loading firm workspace...</p>
-        </div>
+        <div style={styles.loadingCard}>Loading client workspace...</div>
       </main>
     );
   }
@@ -619,245 +621,223 @@ export default function DashboardClientsPage() {
   if (!firmId) {
     return (
       <main style={styles.page}>
-        <div style={styles.container}>
-          <section style={styles.card}>
-            <h1 style={styles.sectionTitle}>Firm access required</h1>
-            <p style={styles.sectionText}>{message}</p>
-            <div style={styles.actions}>
-              <Link href="/auth/login" style={styles.darkButton}>
-                Back to Login
-              </Link>
-              <Link href="/auth/register" style={styles.blueButton}>
-                Register Firm
-              </Link>
-            </div>
-          </section>
-        </div>
+        <section style={styles.card}>
+          <h1 style={styles.sectionTitle}>Firm access required</h1>
+          <p style={styles.sectionText}>{message}</p>
+          <div style={styles.actions}>
+            <Link href="/auth/login" style={styles.darkButton}>
+              Back to Login
+            </Link>
+            <Link href="/auth/register" style={styles.blueButton}>
+              Register Firm
+            </Link>
+          </div>
+        </section>
       </main>
     );
   }
 
   return (
     <main style={styles.page}>
-      <div style={styles.container}>
-        {isAdminView && (
-          <div style={styles.adminBanner}>
-            <strong>Admin View: you are viewing this firm dashboard.</strong>
+      {isAdminView && (
+        <div style={styles.adminBanner}>
+          <strong>Admin view: you are viewing this firm workspace.</strong>
 
-            <button onClick={exitAdminView} style={styles.amberButton}>
-              Exit Admin View
-            </button>
-          </div>
-        )}
+          <button onClick={exitAdminView} style={styles.amberButton}>
+            Exit Admin View
+          </button>
+        </div>
+      )}
 
-        <section style={styles.hero}>
-          <div>
-            <p style={styles.kicker}>Hala MTD Portal</p>
-            <h1 style={styles.heroTitle}>{firm?.name || "Your Firm"}</h1>
+      <section style={styles.header}>
+        <div>
+          <p style={styles.kicker}>Client workspace</p>
+          <h1 style={styles.title}>{firm?.name || "Clients"}</h1>
+          <p style={styles.subtitle}>
+            Manage client records, HMRC readiness and MTD ITSA operational status.
+          </p>
+        </div>
 
-            <p style={styles.heroText}>
-              Collaborative MTD ITSA command centre for accountancy firms, HMRC
-              obligations, quarterly workflows and final declarations.
-            </p>
+        <div style={styles.headerActions}>
+          <button onClick={downloadCSVTemplate} style={styles.lightButton}>
+            CSV template
+          </button>
 
-            <div style={styles.badgeWrap}>
-              <span style={styles.greenBadge}>HMRC sandbox enabled</span>
-              <span style={styles.blueBadge}>Firm workspace</span>
-              <span style={styles.purpleBadge}>MTD ITSA beta</span>
-            </div>
-          </div>
-
-          <div style={styles.heroActions}>
-            <Link href="/dashboard/settings" style={styles.greenButton}>
-              HMRC Settings
-            </Link>
-
-            <Link href="/dashboard/team" style={styles.blueButton}>
-              Team
-            </Link>
-
-            <button onClick={handleLogout} style={styles.whiteButton}>
-              Logout
-            </button>
-          </div>
-        </section>
-
-        {message && <div style={styles.message}>{message}</div>}
-
-        <section style={styles.statsGrid}>
-          <StatCard label="Active clients" value={stats.totalClients} />
-          <StatCard label="Archived" value={stats.archivedClients} color="#475569" />
-          <StatCard label="Submitted" value={stats.submittedClients} color="#166534" />
-          <StatCard label="Overdue" value={stats.overdueClients} color="#991b1b" />
-          <StatCard label="Needs attention" value={stats.attentionClients} color="#92400e" />
-          <StatCard label="Open obligations" value={stats.totalOpenObligations} color="#1d4ed8" />
-          <StatCard label="HMRC ready" value={stats.hmrcReadyClients} color="#047857" />
-        </section>
-
-        <section style={styles.card}>
-          <div style={styles.sectionHeader}>
-            <div>
-              <h2 style={styles.sectionTitle}>Clients</h2>
-              <p style={styles.sectionText}>
-                Add, edit, archive or safely delete firm clients. HMRC/audit records
-                are protected from accidental deletion.
-              </p>
-            </div>
-
-            <div style={styles.actions}>
-              <button onClick={downloadCSVTemplate} style={styles.whiteActionButton}>
-                Download CSV Template
-              </button>
-
-              <label style={styles.blueButton}>
-                {uploading ? "Uploading..." : "Import CSV"}
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleCSVUpload}
-                  style={{ display: "none" }}
-                />
-              </label>
-
-              <Link href="/dashboard/clients/new" style={styles.darkButton}>
-                Add Client
-              </Link>
-            </div>
-          </div>
-
-          <div style={styles.toolbar}>
+          <label style={styles.blueButton}>
+            {uploading ? "Uploading..." : "Import CSV"}
             <input
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Search by name, email, NINO, UTR, reference or postcode..."
-              style={styles.searchInput}
+              type="file"
+              accept=".csv"
+              onChange={handleCSVUpload}
+              style={{ display: "none" }}
             />
+          </label>
 
-            <label style={styles.toggleLabel}>
-              <input
-                type="checkbox"
-                checked={showArchived}
-                onChange={(e) => setShowArchived(e.target.checked)}
-              />
-              Show archived clients
-            </label>
+          <Link href="/dashboard/clients/new" style={styles.darkButton}>
+            Add client
+          </Link>
+        </div>
+      </section>
+
+      {message && <div style={styles.message}>{message}</div>}
+
+      <section style={styles.statStrip}>
+        <StatCard label="Active" value={stats.totalClients} />
+        <StatCard label="Archived" value={stats.archivedClients} color="#475569" />
+        <StatCard label="Submitted" value={stats.submittedClients} color="#067647" />
+        <StatCard label="Overdue" value={stats.overdueClients} color="#be123c" />
+        <StatCard label="Attention" value={stats.attentionClients} color="#92400e" />
+        <StatCard label="Open obligations" value={stats.totalOpenObligations} color="#175cd3" />
+        <StatCard label="HMRC ready" value={stats.hmrcReadyClients} color="#047857" />
+      </section>
+
+      <section style={styles.card}>
+        <div style={styles.tableHeader}>
+          <div>
+            <h2 style={styles.sectionTitle}>Client list</h2>
+            <p style={styles.sectionText}>
+              Search, open, edit or safely archive clients. Deletion is blocked when compliance records exist.
+            </p>
           </div>
 
-          <div style={styles.clientList}>
-            {visibleClients.length === 0 ? (
-              <div style={styles.emptyBox}>
-                <p style={{ fontWeight: 800 }}>No clients found.</p>
-                <p style={{ color: "#64748b", fontSize: 14 }}>
-                  Add a client manually, import CSV, or enable archived clients.
-                </p>
-              </div>
-            ) : (
-              visibleClients.map((c) => {
-                const status = getClientStatus(c);
-                const taxYears = c.tax_years || [];
-                const obligations = c.obligations || [];
-                const openObligations =
-                  status.label === "Submitted"
-                    ? []
-                    : obligations.filter((o: any) => isOpenStatus(o.status));
-                const isArchived = Boolean(c.archived_at);
-                const isBusy = actionLoadingId === c.id;
+          <label style={styles.toggleLabel}>
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />
+            Show archived
+          </label>
+        </div>
 
-                return (
-                  <div
-                    key={c.id}
-                    style={{
-                      ...styles.clientRow,
-                      opacity: isArchived ? 0.78 : 1,
-                    }}
-                  >
-                    <div>
-                      <div style={styles.clientTitleRow}>
-                        <h3 style={styles.clientTitle}>{getClientName(c)}</h3>
+        <div style={styles.toolbar}>
+          <input
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="Search name, email, NINO, UTR, reference or postcode..."
+            style={styles.searchInput}
+          />
+        </div>
 
-                        {c.hmrc_authorisation_status && (
-                          <span style={styles.hmrcBadge}>
-                            HMRC:{" "}
-                            {String(c.hmrc_authorisation_status).replace("_", " ")}
-                          </span>
-                        )}
+        <div style={styles.table}>
+          <div style={styles.tableHead}>
+            <span>Client</span>
+            <span>Tax / HMRC</span>
+            <span>Status</span>
+            <span>Actions</span>
+          </div>
 
-                        {isArchived && (
-                          <span style={styles.archivedBadge}>Archived</span>
-                        )}
-                      </div>
+          {visibleClients.length === 0 ? (
+            <div style={styles.emptyBox}>
+              <strong>No clients found.</strong>
+              <p>Add a client, import CSV, or enable archived clients.</p>
+            </div>
+          ) : (
+            visibleClients.map((c) => {
+              const status = getClientStatus(c);
+              const taxYears = c.tax_years || [];
+              const obligations = c.obligations || [];
+              const openObligations =
+                status.label === "Submitted"
+                  ? []
+                  : obligations.filter((o: any) => isOpenStatus(o.status));
+              const isArchived = Boolean(c.archived_at);
+              const isBusy = actionLoadingId === c.id;
 
-                      <p style={styles.clientMeta}>
-                        {getClientEmail(c)} · {getClientType(c)}
-                      </p>
-
-                      <p style={styles.clientSmall}>
-                        NINO: {c.nino || "Missing"} · UTR: {c.utr || "Missing"} ·
-                        Tax years: {taxYears.length} · Open obligations:{" "}
-                        {openObligations.length}
-                      </p>
-                    </div>
-
-                    <div>
-                      <span
-                        style={{
-                          ...styles.statusBadge,
-                          background: status.bg,
-                          color: status.color,
-                        }}
-                      >
-                        {status.icon} {status.label}
-                      </span>
-                    </div>
-
-                    <div style={styles.rowActions}>
-                      <Link href={`/dashboard/clients/${c.id}`} style={styles.openButton}>
-                        Open
+              return (
+                <div
+                  key={c.id}
+                  style={{
+                    ...styles.clientRow,
+                    opacity: isArchived ? 0.72 : 1,
+                  }}
+                >
+                  <div style={styles.clientMain}>
+                    <div style={styles.clientTitleRow}>
+                      <Link href={`/dashboard/clients/${c.id}`} style={styles.clientTitle}>
+                        {getClientName(c)}
                       </Link>
 
-                      <Link
-                        href={`/dashboard/clients/${c.id}/edit`}
-                        style={styles.editButton}
-                      >
-                        Edit
-                      </Link>
+                      {isArchived && <span style={styles.archivedBadge}>Archived</span>}
+                    </div>
 
-                      {isArchived ? (
-                        <button
-                          type="button"
-                          onClick={() => restoreClient(c)}
-                          disabled={isBusy}
-                          style={styles.restoreButton}
-                        >
-                          {isBusy ? "Working..." : "Restore"}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => archiveClient(c)}
-                          disabled={isBusy}
-                          style={styles.archiveButton}
-                        >
-                          {isBusy ? "Working..." : "Archive"}
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => deleteClient(c)}
-                        disabled={isBusy}
-                        style={styles.deleteButton}
-                      >
-                        Delete
-                      </button>
+                    <div style={styles.clientMeta}>
+                      {getClientEmail(c)} · {getClientType(c)}
                     </div>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </section>
-      </div>
+
+                  <div>
+                    <div style={styles.taxLine}>NINO: {c.nino || "Missing"}</div>
+                    <div style={styles.taxLine}>UTR: {c.utr || "Missing"}</div>
+                    <div style={styles.taxLine}>
+                      Years: {taxYears.length} · Open: {openObligations.length}
+                    </div>
+
+                    {c.hmrc_authorisation_status && (
+                      <span style={styles.hmrcBadge}>
+                        HMRC: {String(c.hmrc_authorisation_status).replace("_", " ")}
+                      </span>
+                    )}
+                  </div>
+
+                  <div>
+                    <span
+                      style={{
+                        ...styles.statusBadge,
+                        background: status.bg,
+                        color: status.color,
+                      }}
+                    >
+                      {status.icon} {status.label}
+                    </span>
+
+                    <div style={styles.statusDetail}>{status.detail}</div>
+                  </div>
+
+                  <div style={styles.rowActions}>
+                    <Link href={`/dashboard/clients/${c.id}`} style={styles.openButton}>
+                      Open
+                    </Link>
+
+                    <Link href={`/dashboard/clients/${c.id}/edit`} style={styles.editButton}>
+                      Edit
+                    </Link>
+
+                    {isArchived ? (
+                      <button
+                        type="button"
+                        onClick={() => restoreClient(c)}
+                        disabled={isBusy}
+                        style={styles.restoreButton}
+                      >
+                        {isBusy ? "Working..." : "Restore"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => archiveClient(c)}
+                        disabled={isBusy}
+                        style={styles.archiveButton}
+                      >
+                        {isBusy ? "Working..." : "Archive"}
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => deleteClient(c)}
+                      disabled={isBusy}
+                      style={styles.deleteButton}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </section>
     </main>
   );
 }
@@ -865,7 +845,7 @@ export default function DashboardClientsPage() {
 function StatCard({
   label,
   value,
-  color = "#0f172a",
+  color = "#172033",
 }: {
   label: string;
   value: any;
@@ -873,375 +853,357 @@ function StatCard({
 }) {
   return (
     <div style={styles.statCard}>
-      <p style={styles.statLabel}>{label}</p>
-      <p style={{ ...styles.statValue, color }}>{value}</p>
+      <span style={styles.statLabel}>{label}</span>
+      <strong style={{ ...styles.statValue, color }}>{value}</strong>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
   page: {
-    minHeight: "100vh",
-    background: "#f8fafc",
-    padding: 32,
-    color: "#0f172a",
-  },
-  container: {
-    maxWidth: 1280,
-    margin: "0 auto",
     display: "grid",
-    gap: 24,
+    gap: 14,
+    color: "#172033",
+  },
+  loadingCard: {
+    background: "white",
+    border: "1px solid #e6eaf0",
+    borderRadius: 16,
+    padding: 16,
+    color: "#64748b",
+    fontSize: 13,
+    fontWeight: 750,
   },
   adminBanner: {
     display: "flex",
     justifyContent: "space-between",
-    gap: 12,
     alignItems: "center",
-    padding: 16,
-    background: "#fef3c7",
+    gap: 12,
+    padding: "10px 12px",
+    background: "#fff8eb",
     color: "#92400e",
-    border: "1px solid #fde68a",
-    borderRadius: 20,
+    border: "1px solid #fedf89",
+    borderRadius: 14,
+    fontSize: 12,
   },
   message: {
-    padding: 16,
-    background: "#eff6ff",
-    color: "#1e3a8a",
-    border: "1px solid #bfdbfe",
-    borderRadius: 18,
-    fontWeight: 800,
+    padding: "10px 12px",
+    background: "#eff8ff",
+    color: "#175cd3",
+    border: "1px solid #b2ddff",
+    borderRadius: 14,
+    fontSize: 12,
+    fontWeight: 750,
   },
-  hero: {
-    background: "#020617",
-    color: "white",
-    borderRadius: 28,
-    padding: 32,
+  header: {
+    background: "#ffffff",
+    border: "1px solid #e6eaf0",
+    borderRadius: 18,
+    padding: "14px 16px",
     display: "flex",
     justifyContent: "space-between",
-    gap: 24,
     alignItems: "center",
-    flexWrap: "wrap",
-    boxShadow: "0 18px 45px rgba(15, 23, 42, 0.18)",
+    gap: 14,
   },
   kicker: {
     margin: 0,
-    color: "#bfdbfe",
-    fontSize: 14,
-    fontWeight: 700,
+    color: "#64748b",
+    fontSize: 10.5,
+    fontWeight: 850,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
   },
-  heroTitle: {
-    margin: "8px 0 0",
-    fontSize: 38,
-    lineHeight: 1.1,
-    letterSpacing: -1,
+  title: {
+    margin: "3px 0 0",
+    fontSize: 21,
+    lineHeight: 1.15,
+    fontWeight: 850,
+    letterSpacing: -0.5,
+    color: "#111827",
   },
-  heroText: {
-    margin: "12px 0 0",
-    maxWidth: 740,
-    color: "#cbd5e1",
-    fontSize: 16,
-    lineHeight: 1.6,
+  subtitle: {
+    margin: "4px 0 0",
+    color: "#667085",
+    fontSize: 12.5,
+    lineHeight: 1.4,
   },
-  badgeWrap: {
-    marginTop: 20,
+  headerActions: {
     display: "flex",
     gap: 8,
     flexWrap: "wrap",
   },
-  greenBadge: {
-    background: "rgba(34,197,94,.16)",
-    color: "#bbf7d0",
-    border: "1px solid rgba(34,197,94,.35)",
-    borderRadius: 999,
-    padding: "7px 11px",
-    fontSize: 12,
-    fontWeight: 800,
-  },
-  blueBadge: {
-    background: "rgba(59,130,246,.16)",
-    color: "#bfdbfe",
-    border: "1px solid rgba(59,130,246,.35)",
-    borderRadius: 999,
-    padding: "7px 11px",
-    fontSize: 12,
-    fontWeight: 800,
-  },
-  purpleBadge: {
-    background: "rgba(168,85,247,.16)",
-    color: "#e9d5ff",
-    border: "1px solid rgba(168,85,247,.35)",
-    borderRadius: 999,
-    padding: "7px 11px",
-    fontSize: 12,
-    fontWeight: 800,
-  },
-  heroActions: {
-    display: "flex",
-    gap: 12,
-    flexWrap: "wrap",
-  },
-  greenButton: {
-    background: "#16a34a",
-    color: "white",
-    borderRadius: 14,
-    padding: "12px 18px",
-    fontWeight: 800,
-    border: 0,
-    cursor: "pointer",
-    textDecoration: "none",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  blueButton: {
-    background: "#2563eb",
-    color: "white",
-    borderRadius: 14,
-    padding: "12px 18px",
-    fontWeight: 800,
-    border: 0,
-    cursor: "pointer",
-    textDecoration: "none",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  darkButton: {
-    background: "#020617",
-    color: "white",
-    borderRadius: 14,
-    padding: "12px 18px",
-    fontWeight: 800,
-    textDecoration: "none",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    border: 0,
-    cursor: "pointer",
-  },
-  whiteActionButton: {
-    background: "white",
-    color: "#0f172a",
-    borderRadius: 14,
-    padding: "12px 18px",
-    fontWeight: 800,
-    border: "1px solid #cbd5e1",
-    cursor: "pointer",
-  },
-  whiteButton: {
-    background: "white",
-    color: "#020617",
-    borderRadius: 14,
-    padding: "12px 18px",
-    fontWeight: 800,
-    border: 0,
-    cursor: "pointer",
-  },
-  amberButton: {
-    background: "#f59e0b",
-    color: "white",
-    borderRadius: 12,
-    padding: "9px 14px",
-    fontWeight: 800,
-    border: 0,
-    cursor: "pointer",
-  },
-  statsGrid: {
+  statStrip: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-    gap: 16,
+    gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))",
+    gap: 8,
   },
   statCard: {
     background: "white",
-    border: "1px solid #e2e8f0",
-    borderRadius: 22,
-    padding: 22,
-    boxShadow: "0 10px 30px rgba(15, 23, 42, 0.06)",
+    border: "1px solid #e6eaf0",
+    borderRadius: 14,
+    padding: "10px 11px",
+    display: "grid",
+    gap: 4,
   },
   statLabel: {
-    margin: 0,
     color: "#64748b",
-    fontSize: 14,
+    fontSize: 10.5,
+    fontWeight: 750,
   },
   statValue: {
-    margin: "8px 0 0",
-    fontSize: 34,
-    fontWeight: 900,
+    fontSize: 21,
+    lineHeight: 1,
+    letterSpacing: -0.5,
   },
   card: {
     background: "white",
-    border: "1px solid #e2e8f0",
-    borderRadius: 24,
-    padding: 24,
-    boxShadow: "0 10px 30px rgba(15, 23, 42, 0.06)",
+    border: "1px solid #e6eaf0",
+    borderRadius: 18,
+    padding: 14,
   },
-  sectionHeader: {
+  tableHeader: {
     display: "flex",
     justifyContent: "space-between",
-    gap: 18,
-    alignItems: "center",
+    gap: 14,
+    alignItems: "flex-start",
     flexWrap: "wrap",
   },
   sectionTitle: {
     margin: 0,
-    fontSize: 28,
-    fontWeight: 900,
+    fontSize: 17,
+    fontWeight: 850,
+    color: "#111827",
+    letterSpacing: -0.3,
   },
   sectionText: {
-    margin: "6px 0 18px",
-    color: "#64748b",
-    fontSize: 15,
-  },
-  actions: {
-    display: "flex",
-    gap: 10,
-    flexWrap: "wrap",
-    alignItems: "center",
+    margin: "4px 0 0",
+    color: "#667085",
+    fontSize: 12,
+    lineHeight: 1.4,
   },
   toolbar: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 14,
-    alignItems: "center",
-    flexWrap: "wrap",
-    marginTop: 20,
+    marginTop: 12,
   },
   searchInput: {
-    flex: "1 1 420px",
-    border: "1px solid #cbd5e1",
-    borderRadius: 14,
-    padding: "13px 14px",
-    fontSize: 14,
+    width: "100%",
+    border: "1px solid #d7dde7",
+    borderRadius: 12,
+    padding: "9px 11px",
+    fontSize: 12.5,
     outline: "none",
+    background: "#fbfcfd",
+    boxSizing: "border-box",
   },
-  toggleLabel: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    color: "#475569",
-    fontSize: 14,
-    fontWeight: 800,
+  table: {
+    marginTop: 12,
+    border: "1px solid #eef1f5",
+    borderRadius: 14,
+    overflow: "hidden",
   },
-  clientList: {
-    marginTop: 22,
+  tableHead: {
     display: "grid",
+    gridTemplateColumns: "1.25fr 1fr .75fr auto",
     gap: 12,
-  },
-  emptyBox: {
-    padding: 32,
-    border: "1px dashed #cbd5e1",
-    borderRadius: 20,
-    textAlign: "center",
+    padding: "9px 11px",
+    background: "#f8fafc",
+    borderBottom: "1px solid #eef1f5",
+    color: "#64748b",
+    fontSize: 10.5,
+    fontWeight: 850,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
   },
   clientRow: {
     display: "grid",
-    gridTemplateColumns: "1fr auto auto",
-    gap: 18,
+    gridTemplateColumns: "1.25fr 1fr .75fr auto",
+    gap: 12,
     alignItems: "center",
-    padding: 18,
-    border: "1px solid #e2e8f0",
-    borderRadius: 20,
-    background: "#f8fafc",
-    color: "#0f172a",
+    padding: "10px 11px",
+    borderBottom: "1px solid #eef1f5",
+    background: "#ffffff",
+  },
+  clientMain: {
+    minWidth: 0,
   },
   clientTitleRow: {
     display: "flex",
-    gap: 8,
+    gap: 7,
     alignItems: "center",
     flexWrap: "wrap",
   },
   clientTitle: {
-    margin: 0,
-    fontSize: 17,
-    fontWeight: 900,
+    color: "#111827",
+    fontSize: 13.5,
+    fontWeight: 850,
+    textDecoration: "none",
+  },
+  clientMeta: {
+    marginTop: 4,
+    color: "#667085",
+    fontSize: 11.5,
+  },
+  taxLine: {
+    color: "#475467",
+    fontSize: 11.5,
+    lineHeight: 1.45,
   },
   hmrcBadge: {
-    background: "#dcfce7",
-    color: "#166534",
+    display: "inline-flex",
+    marginTop: 5,
+    background: "#ecfdf3",
+    color: "#067647",
+    border: "1px solid #abefc6",
     borderRadius: 999,
-    padding: "5px 9px",
-    fontSize: 12,
+    padding: "3px 7px",
+    fontSize: 10.5,
     fontWeight: 800,
     textTransform: "capitalize",
   },
   archivedBadge: {
-    background: "#e2e8f0",
-    color: "#475569",
+    background: "#f2f4f7",
+    color: "#475467",
+    border: "1px solid #e4e7ec",
     borderRadius: 999,
-    padding: "5px 9px",
-    fontSize: 12,
-    fontWeight: 900,
-  },
-  clientMeta: {
-    margin: "6px 0 0",
-    color: "#475569",
-    fontSize: 14,
-  },
-  clientSmall: {
-    margin: "8px 0 0",
-    color: "#64748b",
-    fontSize: 12,
+    padding: "3px 7px",
+    fontSize: 10.5,
+    fontWeight: 800,
   },
   statusBadge: {
+    display: "inline-flex",
     borderRadius: 999,
-    padding: "8px 12px",
-    fontSize: 13,
-    fontWeight: 900,
+    padding: "5px 8px",
+    fontSize: 10.5,
+    fontWeight: 850,
     whiteSpace: "nowrap",
+  },
+  statusDetail: {
+    marginTop: 5,
+    color: "#98a2b3",
+    fontSize: 10.5,
+    fontWeight: 700,
   },
   rowActions: {
     display: "flex",
-    gap: 8,
+    gap: 6,
     flexWrap: "wrap",
     justifyContent: "flex-end",
   },
-  openButton: {
-    background: "#2563eb",
-    color: "white",
-    borderRadius: 12,
-    padding: "9px 12px",
-    fontWeight: 900,
+  lightButton: {
+    background: "white",
+    color: "#172033",
+    borderRadius: 9,
+    padding: "7px 10px",
+    fontWeight: 800,
+    border: "1px solid #d7dde7",
+    cursor: "pointer",
+    fontSize: 11.5,
+  },
+  blueButton: {
+    background: "#eff8ff",
+    color: "#175cd3",
+    border: "1px solid #b2ddff",
+    borderRadius: 9,
+    padding: "7px 10px",
+    fontWeight: 800,
+    cursor: "pointer",
     textDecoration: "none",
-    fontSize: 13,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 11.5,
+  },
+  darkButton: {
+    background: "#172033",
+    color: "white",
+    borderRadius: 9,
+    padding: "7px 10px",
+    fontWeight: 800,
+    textDecoration: "none",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: 0,
+    cursor: "pointer",
+    fontSize: 11.5,
+  },
+  amberButton: {
+    background: "#fff8eb",
+    color: "#92400e",
+    border: "1px solid #fedf89",
+    borderRadius: 9,
+    padding: "7px 10px",
+    fontWeight: 800,
+    cursor: "pointer",
+    fontSize: 11.5,
+  },
+  toggleLabel: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    color: "#475467",
+    fontSize: 11.5,
+    fontWeight: 750,
+  },
+  openButton: {
+    background: "#172033",
+    color: "white",
+    borderRadius: 8,
+    padding: "6px 9px",
+    fontWeight: 850,
+    textDecoration: "none",
+    fontSize: 11,
   },
   editButton: {
     background: "white",
-    color: "#0f172a",
-    border: "1px solid #cbd5e1",
-    borderRadius: 12,
-    padding: "9px 12px",
-    fontWeight: 900,
+    color: "#172033",
+    border: "1px solid #d7dde7",
+    borderRadius: 8,
+    padding: "6px 9px",
+    fontWeight: 850,
     textDecoration: "none",
-    fontSize: 13,
+    fontSize: 11,
   },
   archiveButton: {
-    background: "#f59e0b",
-    color: "white",
-    border: 0,
-    borderRadius: 12,
-    padding: "9px 12px",
-    fontWeight: 900,
+    background: "#fff8eb",
+    color: "#92400e",
+    border: "1px solid #fedf89",
+    borderRadius: 8,
+    padding: "6px 9px",
+    fontWeight: 850,
     cursor: "pointer",
-    fontSize: 13,
+    fontSize: 11,
   },
   restoreButton: {
-    background: "#16a34a",
-    color: "white",
-    border: 0,
-    borderRadius: 12,
-    padding: "9px 12px",
-    fontWeight: 900,
+    background: "#ecfdf3",
+    color: "#067647",
+    border: "1px solid #abefc6",
+    borderRadius: 8,
+    padding: "6px 9px",
+    fontWeight: 850,
     cursor: "pointer",
-    fontSize: 13,
+    fontSize: 11,
   },
   deleteButton: {
-    background: "#fee2e2",
+    background: "#fffafa",
     color: "#991b1b",
     border: "1px solid #fecaca",
-    borderRadius: 12,
-    padding: "9px 12px",
-    fontWeight: 900,
+    borderRadius: 8,
+    padding: "6px 9px",
+    fontWeight: 850,
     cursor: "pointer",
-    fontSize: 13,
+    fontSize: 11,
+  },
+  actions: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  emptyBox: {
+    padding: 22,
+    textAlign: "center",
+    background: "#fbfcfd",
+    color: "#667085",
+    fontSize: 12,
   },
 };
