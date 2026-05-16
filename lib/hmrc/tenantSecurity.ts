@@ -24,13 +24,15 @@ export async function getAuthenticatedUserFromRequest(req: Request) {
 export async function isHalaAdmin(email?: string | null) {
   if (!email) return false;
 
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("app_admins")
     .select("id")
     .ilike("email", email)
-    .maybeSingle();
+    .limit(1);
 
-  return Boolean(data?.id);
+  if (error) throw new Error(error.message);
+
+  return Boolean((data || [])[0]?.id);
 }
 
 export async function getUserFirmIds(userId: string) {
@@ -42,7 +44,9 @@ export async function getUserFirmIds(userId: string) {
 
   if (error) throw new Error(error.message);
 
-  return (data || []).map((row: any) => row.firm_id);
+  return Array.from(
+    new Set((data || []).map((row: any) => row.firm_id).filter(Boolean))
+  );
 }
 
 export async function assertClientAccess(params: {
@@ -53,13 +57,19 @@ export async function assertClientAccess(params: {
 }) {
   const { userId, userEmail, clientId, allowHalaAdmin = true } = params;
 
-  const { data: client, error } = await supabaseAdmin
+  const { data: clients, error } = await supabaseAdmin
     .from("clients")
     .select("*")
     .eq("id", clientId)
-    .maybeSingle();
+    .limit(1);
 
-  if (error || !client) {
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const client = (clients || [])[0];
+
+  if (!client) {
     throw new Error("Client not found");
   }
 
@@ -87,15 +97,21 @@ export async function assertTaxYearAccess(params: {
     allowHalaAdmin: params.allowHalaAdmin,
   });
 
-  const { data: taxYear, error } = await supabaseAdmin
+  const { data: taxYears, error } = await supabaseAdmin
     .from("tax_years")
     .select("*")
     .eq("id", params.taxYearId)
     .eq("client_id", params.clientId)
     .eq("firm_id", client.firm_id)
-    .maybeSingle();
+    .limit(1);
 
-  if (error || !taxYear) {
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const taxYear = (taxYears || [])[0];
+
+  if (!taxYear) {
     throw new Error("Tax year not found or does not belong to this client");
   }
 
@@ -108,17 +124,29 @@ export async function assertQuarterAccess(params: {
   quarterId: string;
   allowHalaAdmin?: boolean;
 }) {
-  const { data: quarter, error } = await supabaseAdmin
+  const { data: quarters, error } = await supabaseAdmin
     .from("quarters")
     .select("*, tax_years(*)")
     .eq("id", params.quarterId)
-    .maybeSingle();
+    .limit(1);
 
-  if (error || !quarter || !quarter.tax_years) {
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const quarter = (quarters || [])[0];
+
+  if (!quarter || !quarter.tax_years) {
     throw new Error("Quarter not found");
   }
 
-  const taxYear = quarter.tax_years;
+  const taxYear = Array.isArray(quarter.tax_years)
+    ? quarter.tax_years[0]
+    : quarter.tax_years;
+
+  if (!taxYear) {
+    throw new Error("Quarter tax year not found");
+  }
 
   const client = await assertClientAccess({
     userId: params.userId,
