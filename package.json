@@ -12,6 +12,7 @@
     "@stripe/stripe-js": "^9.5.0",
     "@supabase/supabase-js": "^2.105.3",
     "@tailwindcss/postcss": "^4.2.4",
+    "@vercel/analytics": "^2.0.1",
     "next": "latest",
     "papaparse": "^5.5.3",
     "postcss": "^8.5.14",
