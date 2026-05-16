@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -53,12 +53,14 @@ function toneColour(tone: Metric["tone"]) {
 
 function formatDate(value?: string | null) {
   if (!value) return "";
+
   try {
     return new Intl.DateTimeFormat("en-GB", {
       day: "2-digit",
       month: "short",
       hour: "2-digit",
       minute: "2-digit",
+      timeZone: "Europe/London",
     }).format(new Date(value));
   } catch {
     return value;
@@ -141,7 +143,7 @@ export default function DashboardHomePage() {
   }, [router]);
 
   if (loading) {
-    return <div style={styles.notice}>Loading workspace...</div>;
+    return <div style={styles.notice}>Loading practice control centre...</div>;
   }
 
   if (isHalaAdmin && !firmId) {
@@ -176,20 +178,53 @@ export default function DashboardHomePage() {
   const metrics = dashboard?.metrics || [];
   const queues = dashboard?.queues;
 
+  const urgentCount =
+    (queues?.overdueObligations.length || 0) +
+    (queues?.failedSubmissions.length || 0) +
+    (queues?.auditAlerts.length || 0);
+
+  const reviewCount =
+    (queues?.partnerApprovals.length || 0) +
+    (queues?.hmrcSyncWarnings.length || 0);
+
   return (
     <div style={styles.page}>
       <section style={styles.header}>
         <div>
-          <p style={styles.kicker}>Practice overview</p>
+          <p style={styles.kicker}>Practice control centre</p>
           <h1 style={styles.title}>Dashboard</h1>
           <p style={styles.subtitle}>
-            Your firm’s MTD ITSA workload, HMRC issues and evidence health in one place.
+            MTD ITSA workload, HMRC risk, review queues and audit evidence health.
           </p>
         </div>
 
         <div style={styles.headerActions}>
-          <Link href="/dashboard/clients" style={styles.primaryButton}>Clients</Link>
-          <Link href="/dashboard/hmrc-connect" style={styles.secondaryButton}>HMRC</Link>
+          <Link href="/dashboard/clients" style={styles.primaryButton}>Open clients</Link>
+          <Link href="/dashboard/hmrc-connect" style={styles.secondaryButton}>HMRC connect</Link>
+        </div>
+      </section>
+
+      <section style={styles.commandStrip}>
+        <div style={styles.commandItem}>
+          <span style={styles.commandLabel}>Urgent</span>
+          <strong style={{ ...styles.commandValue, color: urgentCount > 0 ? "#b42318" : "#067647" }}>
+            {urgentCount}
+          </strong>
+          <span style={styles.commandText}>overdue, failed or audit risk</span>
+        </div>
+
+        <div style={styles.commandItem}>
+          <span style={styles.commandLabel}>Review</span>
+          <strong style={{ ...styles.commandValue, color: reviewCount > 0 ? "#b54708" : "#475467" }}>
+            {reviewCount}
+          </strong>
+          <span style={styles.commandText}>approvals and HMRC sync warnings</span>
+        </div>
+
+        <div style={styles.commandItem}>
+          <span style={styles.commandLabel}>Last refresh</span>
+          <strong style={styles.commandValueSmall}>{formatDate(dashboard?.generatedAt)}</strong>
+          <span style={styles.commandText}>operational data snapshot</span>
         </div>
       </section>
 
@@ -215,6 +250,8 @@ export default function DashboardHomePage() {
       <section style={styles.grid}>
         <Panel title="Overdue obligations" count={queues?.overdueObligations.length || 0} items={queues?.overdueObligations || []} empty="No overdue obligations." />
         <Panel title="Submission issues" count={queues?.failedSubmissions.length || 0} items={queues?.failedSubmissions || []} empty="No submission issues." />
+        <Panel title="Partner approvals" count={queues?.partnerApprovals.length || 0} items={queues?.partnerApprovals || []} empty="No partner approvals waiting." />
+        <Panel title="HMRC sync warnings" count={queues?.hmrcSyncWarnings.length || 0} items={queues?.hmrcSyncWarnings || []} empty="No HMRC sync warnings." />
         <Panel title="Audit alerts" count={queues?.auditAlerts.length || 0} items={queues?.auditAlerts || []} empty="No audit alerts." />
         <Panel title="Recent activity" count={dashboard?.activity.length || 0} items={dashboard?.activity || []} empty="No recent activity." />
       </section>
@@ -234,17 +271,25 @@ function Panel({
   empty: string;
 }) {
   return (
-    <details style={styles.panel}>
+    <details style={styles.panel} open={count > 0}>
       <summary style={styles.panelHeader}>
         <h2 style={styles.panelTitle}>{title}</h2>
-        <span style={styles.count}>{count}</span>
+        <span
+          style={{
+            ...styles.count,
+            background: count > 0 ? "#fff4ed" : "#f2f4f7",
+            color: count > 0 ? "#b54708" : "#475467",
+          }}
+        >
+          {count}
+        </span>
       </summary>
 
       <div style={styles.list}>
         {items.length === 0 ? (
           <div style={styles.empty}>{empty}</div>
         ) : (
-          items.slice(0, 3).map((item) => {
+          items.slice(0, 4).map((item) => {
             const card = (
               <div style={styles.item}>
                 <div style={{ minWidth: 0 }}>
@@ -273,37 +318,38 @@ function Panel({
 const styles: Record<string, React.CSSProperties> = {
   page: {
     display: "grid",
-    gap: 14,
+    gap: 12,
     color: "#172033",
   },
   header: {
     background: "#ffffff",
-    border: "1px solid #e6eaf0",
+    border: "1px solid #e7edf5",
     borderRadius: 18,
-    padding: "18px 20px",
+    padding: "17px 18px",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     gap: 14,
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.035)",
   },
   kicker: {
     margin: 0,
-    color: "#657084",
+    color: "#667085",
     fontSize: 11,
     fontWeight: 800,
     textTransform: "uppercase",
-    letterSpacing: 1.2,
+    letterSpacing: 1.1,
   },
   title: {
     margin: "4px 0 0",
-    fontSize: 24,
+    fontSize: 23,
     lineHeight: 1.15,
     fontWeight: 850,
-    letterSpacing: -0.6,
+    letterSpacing: -0.5,
     color: "#111827",
   },
   subtitle: {
-    margin: "6px 0 0",
+    margin: "5px 0 0",
     color: "#667085",
     fontSize: 13,
     lineHeight: 1.45,
@@ -311,39 +357,82 @@ const styles: Record<string, React.CSSProperties> = {
   headerActions: {
     display: "flex",
     gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
   },
   primaryButton: {
     background: "#172033",
     color: "white",
-    padding: "9px 12px",
+    padding: "8px 12px",
     borderRadius: 10,
     textDecoration: "none",
     fontSize: 12,
     fontWeight: 800,
     display: "inline-flex",
+    whiteSpace: "nowrap",
   },
   secondaryButton: {
     background: "#ffffff",
     color: "#172033",
-    padding: "9px 12px",
+    padding: "8px 12px",
     borderRadius: 10,
     border: "1px solid #d7dde7",
     textDecoration: "none",
     fontSize: 12,
     fontWeight: 800,
     display: "inline-flex",
+    whiteSpace: "nowrap",
+  },
+  commandStrip: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 10,
+  },
+  commandItem: {
+    background: "#ffffff",
+    border: "1px solid #e7edf5",
+    borderRadius: 15,
+    padding: "12px 14px",
+    display: "grid",
+    gap: 3,
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)",
+  },
+  commandLabel: {
+    color: "#667085",
+    fontSize: 11,
+    fontWeight: 800,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  commandValue: {
+    fontSize: 24,
+    fontWeight: 850,
+    letterSpacing: -0.6,
+    lineHeight: 1.05,
+  },
+  commandValueSmall: {
+    fontSize: 15,
+    fontWeight: 850,
+    color: "#172033",
+    lineHeight: 1.35,
+  },
+  commandText: {
+    color: "#667085",
+    fontSize: 11.5,
+    fontWeight: 600,
   },
   metricsGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))",
     gap: 10,
   },
   metricCard: {
     background: "#ffffff",
-    border: "1px solid #e6eaf0",
-    borderRadius: 16,
-    padding: 14,
-    minHeight: 105,
+    border: "1px solid #e7edf5",
+    borderRadius: 15,
+    padding: 13,
+    minHeight: 96,
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)",
   },
   metricTop: {
     display: "flex",
@@ -356,61 +445,60 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 99,
   },
   metricLabel: {
-    fontSize: 12,
+    fontSize: 11.5,
     color: "#475467",
     fontWeight: 800,
   },
   metricValue: {
-    marginTop: 10,
-    fontSize: 26,
+    marginTop: 8,
+    fontSize: 24,
     fontWeight: 850,
-    letterSpacing: -0.8,
+    letterSpacing: -0.75,
     color: "#111827",
   },
   metricText: {
-    margin: "4px 0 0",
+    margin: "3px 0 0",
     color: "#667085",
-    fontSize: 11.5,
+    fontSize: 11.25,
     lineHeight: 1.35,
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(460px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
     gap: 12,
   },
   panel: {
     background: "#ffffff",
-    border: "1px solid #e6eaf0",
+    border: "1px solid #e7edf5",
     borderRadius: 16,
     padding: 0,
     overflow: "hidden",
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)",
   },
   panelHeader: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: "14px 16px",
+    padding: "13px 14px",
     cursor: "pointer",
     listStyle: "none",
   },
   panelTitle: {
     margin: 0,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: 850,
     color: "#111827",
   },
   count: {
-    background: "#f2f4f7",
-    color: "#475467",
     borderRadius: 999,
-    padding: "4px 8px",
+    padding: "3px 8px",
     fontSize: 11,
-    fontWeight: 800,
+    fontWeight: 850,
   },
   list: {
     display: "grid",
     gap: 8,
-    padding: "0 14px 14px",
+    padding: "0 12px 12px",
   },
   item: {
     background: "#fbfcfd",
@@ -464,8 +552,9 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #fedf89",
     color: "#92400e",
     borderRadius: 12,
-    padding: 10,
+    padding: "9px 11px",
     fontSize: 12,
+    fontWeight: 650,
   },
   notice: {
     background: "#ffffff",
@@ -480,5 +569,3 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 20,
   },
 };
-
-
