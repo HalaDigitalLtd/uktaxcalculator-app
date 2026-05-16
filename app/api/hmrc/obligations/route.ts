@@ -1080,7 +1080,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const accessToken = await getValidHmrcToken(client.firm_id);
+    const accessToken = await getValidHmrcToken(client.id);
 
     if (!accessToken) {
       return NextResponse.json(
