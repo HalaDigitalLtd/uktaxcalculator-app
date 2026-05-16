@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "../supabaseAdmin";
+﻿import { supabaseAdmin } from "../supabaseAdmin";
 import {
   DEFAULT_PLAN_CAPABILITIES,
   BillingFeature,
@@ -23,12 +23,18 @@ export type FirmBillingAccess = {
     clients: number;
     staff: number;
     monthlySubmissions: number;
+    storageMbUsed: number;
   };
   features: Record<string, boolean>;
 };
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function currentBillingMonth() {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function isGraceStillValid(gracePeriodEndsAt: string | null) {
@@ -43,6 +49,7 @@ function billingStatusAllowsAccess(
   const normalised = String(status || "").toLowerCase();
 
   if (normalised === "active" || normalised === "trialing") return true;
+
   if (normalised === "past_due" && isGraceStillValid(gracePeriodEndsAt)) {
     return true;
   }
@@ -84,7 +91,64 @@ async function countMonthlySubmissions(firmId: string) {
     .gte("created_at", start.toISOString());
 
   if (error) throw error;
+
   return count || 0;
+}
+
+async function estimateStorageUsedMb(firmId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("billing_usage_events")
+    .select("quantity")
+    .eq("firm_id", firmId)
+    .eq("event_type", "storage_used");
+
+  if (error) throw error;
+
+  return (data || []).reduce(
+    (sum: number, row: any) => sum + Number(row.quantity || 0),
+    0
+  );
+}
+
+async function createWarningIfNeeded(params: {
+  firmId: string;
+  warningType: string;
+  usageValue: number;
+  limitValue: number;
+}) {
+  if (!params.limitValue || params.limitValue <= 0) return;
+
+  const percentageUsed = Math.round(
+    (params.usageValue / params.limitValue) * 100
+  );
+
+  if (percentageUsed < 80) return;
+
+  const { data: existing } = await supabaseAdmin
+    .from("billing_limit_warnings")
+    .select("id")
+    .eq("firm_id", params.firmId)
+    .eq("warning_type", params.warningType)
+    .gte(
+      "created_at",
+      new Date(Date.now() - 1000 * 60 * 60 * 24 * 7).toISOString()
+    )
+    .maybeSingle();
+
+  if (existing?.id) return;
+
+  await supabaseAdmin.from("billing_limit_warnings").insert({
+    firm_id: params.firmId,
+    warning_type: params.warningType,
+    usage_value: params.usageValue,
+    limit_value: params.limitValue,
+    percentage_used: percentageUsed,
+    metadata: {
+      generatedBy: "billing_access_control",
+      billingMonth: currentBillingMonth(),
+    },
+    created_at: nowIso(),
+  });
 }
 
 export async function getFirmBillingAccess(
@@ -99,6 +163,10 @@ export async function getFirmBillingAccess(
       billing_status,
       access_status,
       grace_period_ends_at,
+      enforcement_enabled,
+      soft_limit_mode,
+      warning_threshold_percent,
+      hard_stop_threshold_percent,
       subscription_plans (
         slug,
         client_limit,
@@ -115,10 +183,11 @@ export async function getFirmBillingAccess(
   if (error) throw error;
 
   const planRow: any = Array.isArray(subscription?.subscription_plans)
-    ? subscription?.subscription_plans[0]
+    ? subscription.subscription_plans[0]
     : subscription?.subscription_plans;
 
   const planSlug = normalisePlanSlug(planRow?.slug);
+
   const defaultPlan = DEFAULT_PLAN_CAPABILITIES[planSlug];
 
   const billingStatus = String(
@@ -130,22 +199,47 @@ export async function getFirmBillingAccess(
   const clients = await countFirmClients(firmId);
   const staff = await countFirmStaff(firmId);
   const monthlySubmissions = await countMonthlySubmissions(firmId);
-
-  const features = {
-    ...defaultPlan.features,
-    ...(planRow?.features || {}),
-  };
+  const storageMbUsed = await estimateStorageUsedMb(firmId);
 
   const limits = {
     clientLimit: Number(planRow?.client_limit || defaultPlan.clientLimit),
     staffLimit: Number(planRow?.staff_limit || defaultPlan.staffLimit),
     monthlySubmissionLimit: Number(
-      planRow?.monthly_submission_limit || defaultPlan.monthlySubmissionLimit
+      planRow?.monthly_submission_limit ||
+        defaultPlan.monthlySubmissionLimit
     ),
     storageMbLimit: Number(
       planRow?.storage_mb_limit || defaultPlan.storageMbLimit
     ),
   };
+
+  await createWarningIfNeeded({
+    firmId,
+    warningType: "client_limit",
+    usageValue: clients,
+    limitValue: limits.clientLimit,
+  });
+
+  await createWarningIfNeeded({
+    firmId,
+    warningType: "staff_limit",
+    usageValue: staff,
+    limitValue: limits.staffLimit,
+  });
+
+  await createWarningIfNeeded({
+    firmId,
+    warningType: "submission_limit",
+    usageValue: monthlySubmissions,
+    limitValue: limits.monthlySubmissionLimit,
+  });
+
+  await createWarningIfNeeded({
+    firmId,
+    warningType: "storage_limit",
+    usageValue: storageMbUsed,
+    limitValue: limits.storageMbLimit,
+  });
 
   const allowedByStatus = billingStatusAllowsAccess(
     billingStatus,
@@ -156,10 +250,26 @@ export async function getFirmBillingAccess(
 
   if (!subscription) reason = "no_subscription";
   else if (!allowedByStatus) reason = `billing_status_${billingStatus}`;
-  else if (clients > limits.clientLimit) reason = "client_limit_exceeded";
-  else if (staff > limits.staffLimit) reason = "staff_limit_exceeded";
-  else if (monthlySubmissions > limits.monthlySubmissionLimit) {
+  else if (
+    !subscription?.soft_limit_mode &&
+    clients > limits.clientLimit
+  ) {
+    reason = "client_limit_exceeded";
+  } else if (
+    !subscription?.soft_limit_mode &&
+    staff > limits.staffLimit
+  ) {
+    reason = "staff_limit_exceeded";
+  } else if (
+    !subscription?.soft_limit_mode &&
+    monthlySubmissions > limits.monthlySubmissionLimit
+  ) {
     reason = "monthly_submission_limit_exceeded";
+  } else if (
+    !subscription?.soft_limit_mode &&
+    storageMbUsed > limits.storageMbLimit
+  ) {
+    reason = "storage_limit_exceeded";
   }
 
   const allowed = !reason;
@@ -174,6 +284,7 @@ export async function getFirmBillingAccess(
         clients,
         staff,
         monthlySubmissions,
+        storageMbUsed,
         checkedAt: nowIso(),
       },
       updated_at: nowIso(),
@@ -193,8 +304,12 @@ export async function getFirmBillingAccess(
       clients,
       staff,
       monthlySubmissions,
+      storageMbUsed,
     },
-    features,
+    features: {
+      ...defaultPlan.features,
+      ...(planRow?.features || {}),
+    },
   };
 }
 
@@ -221,6 +336,39 @@ export async function assertFirmFeatureAccess(
   return access;
 }
 
+export async function assertClientCreationAllowed(firmId: string) {
+  const access = await assertFirmBillingAccess(firmId);
+
+  if (access.usage.clients >= access.limits.clientLimit) {
+    throw new Error("Client limit reached for current subscription");
+  }
+
+  return access;
+}
+
+export async function assertStaffInviteAllowed(firmId: string) {
+  const access = await assertFirmBillingAccess(firmId);
+
+  if (access.usage.staff >= access.limits.staffLimit) {
+    throw new Error("Staff limit reached for current subscription");
+  }
+
+  return access;
+}
+
+export async function assertSubmissionAllowed(firmId: string) {
+  const access = await assertFirmBillingAccess(firmId);
+
+  if (
+    access.usage.monthlySubmissions >=
+    access.limits.monthlySubmissionLimit
+  ) {
+    throw new Error("Monthly submission quota reached");
+  }
+
+  return access;
+}
+
 export async function recordBillingUsageEvent(params: {
   firmId: string;
   eventType:
@@ -232,13 +380,28 @@ export async function recordBillingUsageEvent(params: {
   resourceId?: string | null;
   metadata?: Record<string, unknown>;
 }) {
-  const { error } = await supabaseAdmin.from("billing_usage_events").insert({
+  const billingMonth = currentBillingMonth();
+
+  const access = await getFirmBillingAccess(params.firmId);
+
+  let exceedsLimit = false;
+
+  if (
+    params.eventType === "hmrc_submission" &&
+    access.usage.monthlySubmissions >=
+      access.limits.monthlySubmissionLimit
+  ) {
+    exceedsLimit = true;
+  }
+
+  await supabaseAdmin.from("billing_usage_events").insert({
     firm_id: params.firmId,
     event_type: params.eventType,
     quantity: params.quantity || 1,
     resource_id: params.resourceId || null,
+    billing_month: billingMonth,
+    usage_category: params.eventType,
+    exceeds_limit: exceedsLimit,
     metadata: params.metadata || {},
   });
-
-  if (error) throw error;
 }
