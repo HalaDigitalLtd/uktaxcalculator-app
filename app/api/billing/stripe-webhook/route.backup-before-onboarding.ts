@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
-import { provisionWorkspaceFromOnboardingRegistration } from "../../../../lib/onboarding/provisionWorkspace";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -382,66 +381,10 @@ async function syncSubscription(subscription: Stripe.Subscription, event: Stripe
 
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session, event: Stripe.Event) {
   const stripe = getStripe();
-
-  const onboardingRegistrationId =
-    session.metadata?.onboarding_registration_id ?? null;
-
-  if (onboardingRegistrationId) {
-    const subscriptionId =
-      typeof session.subscription === "string"
-        ? session.subscription
-        : session.subscription?.id ?? null;
-
-    if (!subscriptionId) {
-      return {
-        synced: false,
-        reason: "missing_subscription_for_onboarding_checkout",
-        firmId: null,
-        status: "pending",
-      };
-    }
-
-    const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
-      expand: ["items.data.price"],
-    });
-
-    const firstItem = subscription.items.data[0];
-
-    const provisioned =
-      await provisionWorkspaceFromOnboardingRegistration({
-        registrationId: onboardingRegistrationId,
-        stripeCustomerId:
-          typeof subscription.customer === "string"
-            ? subscription.customer
-            : subscription.customer?.id ?? null,
-        stripeSubscriptionId: subscription.id,
-        stripePriceId: firstItem?.price?.id ?? null,
-        stripeProductId:
-          typeof firstItem?.price?.product === "string"
-            ? firstItem?.price?.product
-            : firstItem?.price?.product?.id ?? null,
-        stripePayload: subscription,
-      });
-
-    return {
-      synced: true,
-      reason: null,
-      firmId: provisioned.firmId,
-      status: provisioned.alreadyProvisioned
-        ? "workspace_already_provisioned"
-        : "workspace_provisioned",
-    };
-  }
-
   const firmId = session.metadata?.firm_id ?? null;
 
   if (!firmId) {
-    return {
-      synced: false,
-      reason: "missing_firm_or_onboarding_metadata",
-      firmId: null,
-      status: "pending",
-    };
+    return { synced: false, reason: "missing_firm_id_metadata", firmId: null, status: "pending" };
   }
 
   const subscriptionId =
@@ -453,7 +396,6 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session, event: 
     const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
       expand: ["items.data.price"],
     });
-
     return syncSubscription(subscription, event);
   }
 
@@ -613,5 +555,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Stripe webhook processing failed" }, { status: 500 });
   }
 }
-
-
